@@ -10,7 +10,9 @@ from PySide6.QtCore import Qt, QPoint, QThread, Signal
 from pathlib import Path
 from typing import List
 import os
-import webbrowser
+import json
+import shutil
+import time
 
 from ui.worker_threads import AnalysisWorker
 from ui.settings_dialog import SettingsPage
@@ -29,7 +31,7 @@ PLATFORM_EXTENSIONS = {
 
 class ExportWorker(QThread):
     progress_updated = Signal(str, int, int)
-    finished = Signal(int, int)          # succeeded, total
+    finished = Signal(int, int)
     error_occurred = Signal(str)
 
     def __init__(self, idb_files: List[Path], script_path: Path,
@@ -72,16 +74,25 @@ class MainWindow(QMainWindow):
         self.export_in_progress = False
         self.worker = None
         self.export_worker = None
+        self.active_page = 0  # 0 = анализ, 1 = конфигурация
 
         self._build_ui()
         self._connect_signals()
         apply_theme(QApplication.instance(), self.current_theme)
+        # Принудительно фиксируем состояние кнопок после глобальной темы
+        self.btn_analysis.setChecked(True)
+        self.btn_settings.setChecked(False)
+        self._update_menu_styles()
+
+    def _update_menu_styles(self):
+        self.btn_analysis.setStyleSheet(self._menu_button_style(self.btn_analysis.isChecked(), self.current_theme))
+        self.btn_settings.setStyleSheet(self._menu_button_style(self.btn_settings.isChecked(), self.current_theme))
 
     @staticmethod
     def _create_help_button(tooltip_text: str) -> QPushButton:
         btn = QPushButton()
         btn.setIcon(btn.style().standardIcon(QStyle.SP_MessageBoxQuestion))
-        btn.setFixedSize(24, 24)
+        btn.setFixedSize(20, 20)
         btn.setFlat(True)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setToolTip("Нажмите для пояснения")
@@ -97,7 +108,7 @@ class MainWindow(QMainWindow):
         base = """
             QPushButton {
                 text-align: left;
-                padding: 10px 15px;
+                padding: 8px 12px;
                 border-radius: 8px;
                 font-weight: 500;
                 border: none;
@@ -139,20 +150,22 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        # Боковая панель
         sidebar = QWidget(objectName="sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(200)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(10, 20, 10, 20)
         sidebar_layout.setSpacing(6)
 
         title_label = QLabel("IDA Batch")
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("font-size: 18px; font-weight: 700; margin-bottom: 15px;")
+        title_label.setStyleSheet("font-size: 16px; font-weight: 700; margin-bottom: 15px;")
         sidebar_layout.addWidget(title_label)
 
         self.btn_analysis = QPushButton("  Анализ")
         self.btn_analysis.setCheckable(True)
-        self.btn_analysis.setStyleSheet(self._menu_button_style(False, self.current_theme))
+        self.btn_analysis.setChecked(True)
+        self.btn_analysis.setStyleSheet(self._menu_button_style(True, self.current_theme))
         sidebar_layout.addWidget(self.btn_analysis)
 
         spacer = QWidget()
@@ -166,6 +179,7 @@ class MainWindow(QMainWindow):
 
         self.btn_settings = QPushButton("  Конфигурация")
         self.btn_settings.setCheckable(True)
+        self.btn_settings.setChecked(False)
         self.btn_settings.setStyleSheet(self._menu_button_style(False, self.current_theme))
         sidebar_layout.addWidget(self.btn_settings)
 
@@ -185,10 +199,10 @@ class MainWindow(QMainWindow):
     def _create_analysis_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(20)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
 
-        # Источник файлов
+        # --- Источник файлов (на всю ширину) ---
         source_group = QGroupBox("Источник файлов")
         source_layout = QVBoxLayout(source_group)
         dir_row = QHBoxLayout()
@@ -204,7 +218,15 @@ class MainWindow(QMainWindow):
         source_layout.addLayout(dir_row)
         layout.addWidget(source_group)
 
-        # Параметры сканирования
+        # --- Две колонки под источником (одинаковой ширины) ---
+        columns_layout = QHBoxLayout()
+        columns_layout.setSpacing(20)
+
+        # Левая колонка
+        left_column = QVBoxLayout()
+        left_column.setSpacing(10)
+        left_column.setContentsMargins(0, 0, 0, 0)
+
         scan_group = QGroupBox("Параметры сканирования")
         scan_layout = QVBoxLayout(scan_group)
 
@@ -262,29 +284,44 @@ class MainWindow(QMainWindow):
         flags_layout.addWidget(self.verbose_check)
         scan_layout.addWidget(flags_group)
 
-        layout.addWidget(scan_group)
+        # Кнопки запуска/отмены
+        buttons_layout = QHBoxLayout()
+        self.start_btn = QPushButton("Запустить анализ")
+        self.start_btn.setFixedHeight(40)
+        self.cancel_btn = QPushButton("Отмена")
+        self.cancel_btn.setEnabled(False)
+        buttons_layout.addWidget(self.start_btn)
+        buttons_layout.addWidget(self.cancel_btn)
+        scan_layout.addLayout(buttons_layout)
 
-        # Прогресс анализа
+        left_column.addWidget(scan_group)
+        left_column.addStretch()
+
+        # Правая колонка
+        right_column = QVBoxLayout()
+        right_column.setSpacing(10)
+        right_column.setContentsMargins(0, 0, 0, 0)
+
+        # Прогресс анализа (включает поле ошибок)
         progress_group = QGroupBox("Прогресс анализа")
         progress_layout = QVBoxLayout(progress_group)
         self.current_file_label = QLabel("Готов к запуску")
         self.files_found_label = QLabel("")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        btn_row = QHBoxLayout()
-        self.start_btn = QPushButton("Запустить анализ")
-        self.start_btn.setFixedHeight(40)
-        self.cancel_btn = QPushButton("Отмена")
-        self.cancel_btn.setEnabled(False)
-        btn_row.addWidget(self.start_btn)
-        btn_row.addWidget(self.cancel_btn)
         progress_layout.addWidget(self.current_file_label)
         progress_layout.addWidget(self.files_found_label)
         progress_layout.addWidget(self.progress_bar)
-        progress_layout.addLayout(btn_row)
-        layout.addWidget(progress_group)
 
-        # Параметры отчёта (новый раздел)
+        self.error_text = QTextEdit()
+        self.error_text.setReadOnly(True)
+        self.error_text.setMaximumHeight(120)
+        self.error_text.setPlaceholderText("Здесь будут появляться сообщения об ошибках...")
+        progress_layout.addWidget(self.error_text)
+
+        right_column.addWidget(progress_group)
+
+        # Параметры отчёта
         report_group = QGroupBox("Параметры отчёта")
         report_layout = QVBoxLayout(report_group)
 
@@ -306,17 +343,12 @@ class MainWindow(QMainWindow):
         report_layout.addWidget(self.report_progress_bar)
         report_layout.addWidget(self.delete_json_check)
         report_layout.addWidget(self.export_report_btn, alignment=Qt.AlignLeft)
-        layout.addWidget(report_group)
+        right_column.addWidget(report_group)
+        right_column.addStretch()
 
-        # Ошибки
-        self.error_group = QGroupBox("Сообщения об ошибках")
-        error_layout = QVBoxLayout(self.error_group)
-        self.error_text = QTextEdit()
-        self.error_text.setReadOnly(True)
-        self.error_text.setMaximumHeight(150)
-        error_layout.addWidget(self.error_text)
-        self.error_group.setVisible(False)
-        layout.addWidget(self.error_group)
+        columns_layout.addLayout(left_column, 1)
+        columns_layout.addLayout(right_column, 1)
+        layout.addLayout(columns_layout)
 
         layout.addStretch()
         return page
@@ -335,8 +367,7 @@ class MainWindow(QMainWindow):
         self.active_page = index
         self.btn_analysis.setChecked(index == 0)
         self.btn_settings.setChecked(index == 1)
-        self.btn_analysis.setStyleSheet(self._menu_button_style(index == 0, self.current_theme))
-        self.btn_settings.setStyleSheet(self._menu_button_style(index == 1, self.current_theme))
+        self._update_menu_styles()
         self.pages.setCurrentIndex(index)
 
     def _browse_input_dir(self):
@@ -351,6 +382,16 @@ class MainWindow(QMainWindow):
         return PLATFORM_EXTENSIONS["All platforms"]["exts"]
 
     def _start_analysis(self):
+        idat_path = get_ida_executable()
+        if not shutil.which(idat_path):
+            QMessageBox.warning(
+                self,
+                "Утилита IDA не найдена",
+                f"Исполняемый файл '{idat_path}' не найден в системном PATH.\n\n"
+                "Пожалуйста, проверьте путь к idat.exe в разделе «Конфигурация» или добавьте папку с IDA в переменную PATH."
+            )
+            return
+
         input_dir = self.inputdir_edit.text().strip()
         if not input_dir:
             QMessageBox.warning(self, "Ошибка", "Укажите директорию с файлами.")
@@ -361,7 +402,6 @@ class MainWindow(QMainWindow):
 
         extensions = self._selected_extensions()
         max_workers = self.max_ida_slider.value()
-        idat_path = get_ida_executable()
 
         files = find_executables(input_dir, extensions=extensions)
         if not files:
@@ -377,7 +417,6 @@ class MainWindow(QMainWindow):
         self.current_file_label.setText("Запуск...")
         self.progress_bar.setValue(0)
         self.error_text.clear()
-        self.error_group.setVisible(False)
 
         self.worker = AnalysisWorker(
             files, idat_path, max_workers,
@@ -396,7 +435,6 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(int(100 * current / total))
 
     def _on_error(self, message: str):
-        self.error_group.setVisible(True)
         self.error_text.append(message)
 
     def _on_finished(self, succeeded: int, total: int):
@@ -441,7 +479,6 @@ class MainWindow(QMainWindow):
         self.report_progress_label.setText("Запуск экспорта данных...")
         self.report_progress_bar.setValue(0)
         self.error_text.clear()
-        self.error_group.setVisible(False)
 
         max_workers = self.max_ida_slider.value()
         idat_path = get_ida_executable()
@@ -463,10 +500,13 @@ class MainWindow(QMainWindow):
         generator = ReportGenerator()
         delete_json = self.delete_json_check.isChecked()
 
-        # Создаём подпапку reports
         input_dir = Path(self.inputdir_edit.text().strip())
         reports_dir = input_dir / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
+
+        generated_html_files = []
+        global_modules_set = set()
+        ida_info = None
 
         generated_count = 0
         for idb_path, success in results.items():
@@ -479,22 +519,53 @@ class MainWindow(QMainWindow):
                 continue
 
             try:
-                # Определяем имя исходного модуля из JSON
                 with open(json_path, "r", encoding="utf-8") as f:
-                    import json
                     data = json.load(f)
-                # file_name в JSON — полный путь к исходному файлу (например, C:\...\7zG.exe)
-                original_file = Path(data["file_name"]).name  # 7zG.exe
+
+                if ida_info is None and "ida_info" in data:
+                    ida_info = data["ida_info"]
+
+                for imp in data.get("imports", []):
+                    mod = imp.get("module")
+                    if mod and mod.lower() != "unknown":
+                        global_modules_set.add(mod)
+
+                original_file = Path(data["file_name"]).name
                 html_name = original_file + ".html"
                 output_html = reports_dir / html_name
 
                 generator.generate_from_json(json_path, output_html)
+                generated_html_files.append(output_html)
                 generated_count += 1
 
                 if delete_json:
                     json_path.unlink(missing_ok=True)
             except Exception as e:
                 self._on_error(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
+
+        # Удаляем временные файлы экспорта
+        for idb_path, success in results.items():
+            if not success:
+                continue
+            out_dir = idb_path.parent
+            script_log = out_dir / (idb_path.stem + "_script.log")
+            self._safe_clean_file(script_log, "script log")
+            for temp_pat in ["*.id0", "*.id1", "*.nam", "*.til"]:
+                for temp_file in out_dir.glob(temp_pat):
+                    self._safe_clean_file(temp_file, temp_pat[1:])
+
+        if generated_html_files:
+            try:
+                sorted_modules = sorted(global_modules_set)
+                generator.generate_index(
+                    reports_dir,
+                    input_dir,
+                    generated_html_files,
+                    sorted_modules,
+                    ida_info
+                )
+            except Exception as e:
+                self._on_error(f"Ошибка создания сводного отчёта: {e}")
 
         self.export_in_progress = False
         self.export_report_btn.setEnabled(True)
@@ -506,11 +577,28 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Внимание", f"Успешных отчётов: {generated_count}/{succeeded}.")
 
+    def _safe_clean_file(self, file_path: Path, description: str = "", retries: int = 3, delay: float = 1.0):
+        if not file_path.exists():
+            return
+        for attempt in range(1, retries + 1):
+            try:
+                file_path.unlink()
+                print(f"[Cleanup] Removed {description}: {file_path.name}")
+                return
+            except PermissionError as e:
+                if attempt < retries:
+                    print(f"[Cleanup] Could not remove {file_path.name} (attempt {attempt}): {e}. Retrying...")
+                    time.sleep(delay)
+                else:
+                    print(f"[Cleanup] Could not remove {file_path.name} after {retries} attempts: {e}")
+            except Exception as e:
+                print(f"[Cleanup] Could not remove {file_path.name}: {e}")
+                break
+
     def _on_config_changed(self, new_config):
         self.cfg = new_config
         new_theme = new_config.get("theme", "light")
         if new_theme != self.current_theme:
             self.current_theme = new_theme
             apply_theme(QApplication.instance(), new_theme)
-            self.btn_analysis.setStyleSheet(self._menu_button_style(self.active_page == 0, new_theme))
-            self.btn_settings.setStyleSheet(self._menu_button_style(self.active_page == 1, new_theme))
+            self._update_menu_styles()

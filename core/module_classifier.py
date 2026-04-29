@@ -1,0 +1,1060 @@
+"""
+Автономный классификатор программных модулей (DLL, SO, DYLIB).
+Содержит максимально полную базу системных и известных сторонних библиотек,
+сгруппированных по платформам и категориям.
+
+Источники:
+- Microsoft Docs (Windows API sets, DLL search order, umbrella libraries)
+- Linux Foundation (Linux Standard Base, LSB)
+- Android Developers / AOSP (NDK native APIs, system libraries)
+- Apple Developer / opensource.apple.com (macOS / iOS system libraries)
+"""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WINDOWS — системные библиотеки (Microsoft Docs, Wikipedia)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_WINDOWS_HAL = {
+    # Аппаратная абстракция (Hardware Abstraction Layer)
+    "hal.dll": "Hardware Abstraction Layer — HAL. Предоставляет единый интерфейс для работы ядра и драйверов с оборудованием (прерывания, таймеры, DMA, управление питанием), скрывая различия между чипсетами и платформами. Загружается в режиме ядра и недоступен пользовательским приложениям напрямую.",
+}
+
+_WINDOWS_NATIVE_API = {
+    # Native API (NT Layer) — самый нижний уровень пользовательского режима
+    "ntdll.dll": "NT Layer DLL — диспетчер системных вызовов Native API. Предоставляет точки входа для системных вызовов (syscall), функции загрузчика образов (Ldr), кучу процессов (RtlHeap), отладку и обработку исключений. Является обязательной зависимостью всех подсистемных DLL (kernel32, user32 и др.), но редко используется приложениями напрямую.",
+    "ntoskrnl.exe": "NT Operating System Kernel — ядро ОС и исполнительная система. Содержит диспетчер объектов, диспетчер памяти, диспетчер ввода/вывода, диспетчер процессов и потоков, подсистему безопасности (SRM), монитор безопасности. Выполняется в режиме ядра и реализует всю низкоуровневую логику ОС.",
+}
+
+_WINDOWS_KERNEL_SUBSYSTEM = {
+    # Подсистема Win32 — ядро
+    "kernel32.dll": "Kernel32 — базовые службы Win32: управление памятью (VirtualAlloc, HeapAlloc), файловый ввод/вывод (CreateFile, ReadFile), процессы и потоки (CreateProcess, CreateThread), синхронизация (Mutex, Event, Semaphore), время и дата, консоль, обработка ошибок. Инкапсулирует вызовы к ntdll.dll, предоставляя документированный API.",
+    "kernelbase.dll": "KernelBase — облегчённая версия kernel32 для приложений UWP и OneCore. Содержит ту же базовую функциональность, но без устаревших и desktop-специфичных API. Используется на всех устройствах Windows (ПК, Xbox, HoloLens).",
+}
+
+_WINDOWS_USER_SUBSYSTEM = {
+    # Подсистема Win32 — пользовательский интерфейс
+    "user32.dll": "User32 — управление окнами, сообщениями, элементами управления. Реализует оконную процедуру (WindowProc), диспетчеризацию сообщений (GetMessage/DispatchMessage), создание окон (CreateWindowEx), меню, курсоры, иконки, буфер обмена, DDE. Все графические приложения Windows зависят от этой DLL.",
+    "gdi32.dll": "GDI32 — Graphics Device Interface. Примитивы рисования: линии, кривые, прямоугольники, эллипсы; работа с кистями, перьями, шрифтами; растровые операции (BitBlt); метафайлы; управление контекстом устройства (DC). Используется user32.dll для отрисовки окон и элементов управления.",
+    "gdi32full.dll": "GDI32Full — расширенная версия GDI32 с дополнительными функциями рендеринга и поддержкой современных форматов.",
+    "comctl32.dll": "Comctl32 — Common Controls Library. Предоставляет стандартные элементы управления: кнопки, списки, деревья (TreeView), списки изображений (ImageList), панели инструментов (Toolbar), вкладки (Tab), индикаторы прогресса, календари. Построена поверх user32 и gdi32.",
+    "comdlg32.dll": "ComDlg32 — Common Dialog Box Library. Стандартные диалоговые окна: открытие/сохранение файла (GetOpenFileName), выбор цвета (ChooseColor), выбор шрифта (ChooseFont), печать (PrintDlg), поиск/замена.",
+    "shlwapi.dll": "Shlwapi — Shell Lightweight API. Вспомогательные функции для работы с реестром, строками, путями, URL. Используется оболочкой Windows и проводником.",
+    "shell32.dll": "Shell32 — оболочка Windows: рабочий стол, панель задач, проводник, контекстные меню, ассоциации файлов, корзина. Предоставляет API для работы с пространством имён оболочки (Shell Namespace), ярлыками, извлечения иконок.",
+    "ole32.dll": "Ole32 — Object Linking and Embedding (OLE) и Component Object Model (COM). Базовые службы COM: фабрики классов, маршалинг, моникеры, хранение (Structured Storage). Фундамент для всех технологий COM, включая ActiveX и OLE.",
+    "oleaut32.dll": "OleAut32 — OLE Automation. Поддержка типов VARIANT, BSTR, SAFEARRAY; диспетчерские интерфейсы (IDispatch); библиотеки типов (ITypeLib/ITypeInfo). Необходима для скриптовых языков (VBScript, JScript) и взаимодействия с Automation-объектами.",
+    "combase.dll": "Combase — базовая поддержка COM и Windows Runtime (WinRT). Содержит фундаментальные функции COM, используемые как классическим COM, так и новыми приложениями WinRT/UWP. Заменила ole32 во многих сценариях.",
+}
+
+_WINDOWS_SECURITY_CRYPTO = {
+    # Безопасность и криптография
+    "advapi32.dll": "Advapi32 — Advanced API: службы безопасности (управление ACL, токенами, привилегиями), реестр (RegCreateKey, RegQueryValue), сервисы Windows (Service Control Manager), криптография (CryptAcquireContext).",
+    "crypt32.dll": "Crypt32 — CryptoAPI: управление сертификатами (X.509), хранилищами сертификатов, кодирование/декодирование ASN.1, проверка цифровых подписей, работа с цепочками сертификатов.",
+    "wintrust.dll": "WinTrust — Microsoft Trust Verification: проверка подлинности исполняемых файлов (Authenticode), проверка цифровых подписей ActiveX-компонентов, управление поставщиками доверия.",
+    "ncrypt.dll": "Ncrypt — Cryptography API Next Generation (CNG): современный криптографический API. Поддержка алгоритмов AES, RSA, ECDSA, SHA-2/3, управление ключами (Key Storage), изоляция ключей.",
+    "bcrypt.dll": "Bcrypt — Cryptographic Primitives: низкоуровневые криптографические примитивы, включая хеширование (SHA, MD5), симметричное шифрование (AES, 3DES), генерация случайных чисел.",
+    "dpapi.dll": "DPAPI — Data Protection API: шифрование и расшифровка данных с привязкой к учётной записи пользователя или компьютеру. Используется для безопасного хранения паролей и ключей без управления ключами шифрования.",
+    "secur32.dll": "Secur32 — Security Support Provider Interface (SSPI): аутентификация (NTLM, Kerberos, Negotiate), управление учётными данными, контексты безопасности.",
+    "sspicli.dll": "SspiCli — SSPI Client: клиентская часть Security Support Provider Interface. Используется приложениями для аутентификации и установки защищённых соединений.",
+    "msasn1.dll": "Msasn1 — ASN.1 Runtime: кодирование/декодирование данных в формате ASN.1 для криптографических операций, сертификатов, Kerberos.",
+    "samlib.dll": "Samlib — Security Account Manager Library: API для управления локальной базой учётных записей (SAM), включая пользователей, группы, пароли.",
+}
+
+_WINDOWS_NETWORK = {
+    # Сетевые службы
+    "ws2_32.dll": "Ws2_32 — Windows Sockets 2 (Winsock): реализация Berkeley Sockets API для Windows. Создание и управление сокетами TCP/UDP, асинхронные операции, поддержка IPv4/IPv6. Основная сетевая библиотека Windows-приложений.",
+    "winhttp.dll": "WinHTTP — Windows HTTP Services: клиентская библиотека для отправки HTTP/HTTPS-запросов к веб-серверам. Предназначена для серверных приложений и служб (в отличие от WinINet, ориентированной на интерактивные приложения).",
+    "wininet.dll": "WinINet — Windows Internet: реализация протоколов HTTP, FTP, Gopher для интерактивных приложений. Поддерживает кэширование, автонастройку прокси, обработку cookie. Используется Internet Explorer и приложениями, встраивающими веб-компоненты.",
+    "urlmon.dll": "Urlmon — URL Moniker: связывание URL с объектами, асинхронная загрузка данных, поддержка MIME-типов, security zones. Используется Internet Explorer и компонентами ActiveX.",
+    "iertutil.dll": "Iertutil — Internet Explorer Runtime Utility: вспомогательные функции для WinINet и UrlMon, включая работу со строками, памятью и кэшем.",
+    "dnsapi.dll": "Dnsapi — DNS Client API: преобразование имён хостов в IP-адреса (DNS resolution), управление локальным кэшем DNS, асинхронные запросы.",
+    "iphlpapi.dll": "IpHlpApi — IP Helper API: информация о сетевых интерфейсах, таблице маршрутизации, ARP-таблице, статистика TCP/UDP, управление адаптерами.",
+    "mpr.dll": "Mpr — Multiple Provider Router: маршрутизация вызовов к сетевым провайдерам (LAN Manager, NetWare, Novell). Перенаправление сетевых запросов к нужному провайдеру.",
+    "netapi32.dll": "Netapi32 — Network Management API: управление общими ресурсами, пользователями и группами домена, сетевыми соединениями. Основа для администрирования Windows-сетей.",
+    "wtsapi32.dll": "Wtsapi32 — Windows Terminal Services API: управление сеансами удалённого рабочего стола (RDP), отправка сообщений между сессиями, запрос информации о терминальных сессиях.",
+}
+
+_WINDOWS_GRAPHICS_MULTIMEDIA = {
+    # Графика и мультимедиа
+    "winmm.dll": "WinMM — Windows Multimedia: аудио (waveOut, midiOut), таймеры высокого разрешения (timeGetTime), управление джойстиком. Устаревший API, заменён DirectX.",
+    "d2d1.dll": "D2D1 — Direct2D: аппаратно-ускоренная двухмерная графика. Рендеринг векторной графики, текста, растровых изображений через GPU. Современная замена GDI/GDI+.",
+    "dwrite.dll": "DWrite — DirectWrite: высококачественный рендеринг текста с поддержкой ClearType, OpenType-шрифтов, сложных скриптов (арабский, деванагари).",
+    "dxgi.dll": "DXGI — DirectX Graphics Infrastructure: управление адаптерами дисплея, цепочками переключения (swap chains), перечисление видеорежимов. Фундамент для Direct3D.",
+    "d3d11.dll": "D3D11 — Direct3D 11: трёхмерная графика и GPGPU-вычисления с использованием шейдерной модели 5.0. Поддержка тесселяции, compute-шейдеров, многопоточного рендеринга.",
+    "d3d9.dll": "D3D9 — Direct3D 9: трёхмерная графика предыдущего поколения. Поддерживает шейдерную модель 3.0. Всё ещё широко используется для совместимости со старыми приложениями и играми.",
+    "opengl32.dll": "OpenGL32 — реализация OpenGL API для Windows. Обеспечивает доступ к аппаратно-ускоренной 2D/3D-графике через стандартизированный кроссплатформенный интерфейс.",
+    "glu32.dll": "GLU32 — OpenGL Utility Library: вспомогательные функции для OpenGL: построение квадратичных поверхностей (сферы, цилиндры), NURBS-кривые, матричные преобразования.",
+    "msimg32.dll": "Msimg32 — Windows Image Support: функции для работы с изображениями, включая GradientFill и AlphaBlend для полупрозрачных и градиентных эффектов.",
+    "uiautomationcore.dll": "UIAutomationCore — UI Automation Core: инфраструктура для accessibility-инструментов (экранные дикторы, программы для людей с ограниченными возможностями). Предоставляет дерево элементов управления и их свойств.",
+}
+
+_WINDOWS_RUNTIME = {
+    # Библиотеки времени выполнения
+    "msvcrt.dll": "MSVCRT — Microsoft Visual C Runtime: стандартная библиотека C (printf, malloc, fopen, memcpy) для приложений, скомпилированных с Visual C++. Версия по умолчанию в системном каталоге.",
+    "vcruntime140.dll": "VCRuntime140 — Visual C++ 2015/2017/2019 Runtime: базовые функции времени выполнения (инициализация/завершение потока, проброс исключений, проверки безопасности).",
+    "msvcp140.dll": "MSVCP140 — Microsoft Visual C++ 2015/2017/2019 Standard Library: реализация STL (std::string, std::vector, std::map), ввод/вывод (iostream), работа с файлами.",
+    "ucrtbase.dll": "UCRTBase — Universal CRT: универсальная библиотека времени выполнения C для Windows 10+. Включает стандартные функции C99, математические функции, locale-поддержку. Часть рефакторинга CRT на компоненты ОС.",
+    "concrt140.dll": "ConcRT140 — Concurrency Runtime: поддержка параллельных вычислений (PPL — Parallel Patterns Library), асинхронных операций, агентов. Часть Visual C++ Runtime.",
+    "atl.dll": "ATL — Active Template Library: набор шаблонных классов C++ для COM-разработки. Упрощает создание COM-объектов, ActiveX-компонентов, элементов управления.",
+}
+
+_WINDOWS_SYSTEM_SERVICES = {
+    # Системные службы и утилиты
+    "psapi.dll": "PSAPI — Process Status API: получение информации о процессах и потоках, включая список загруженных модулей, использование памяти, количество handles.",
+    "dbghelp.dll": "DbgHelp — Debug Help Library: функции для работы с отладочной информацией (символы, формат PDB), анализ стека вызовов, создание минидампов. Используется отладчиками и инструментами профилирования.",
+    "powrprof.dll": "PowrProf — Power Profile: управление схемами электропитания, запрос состояния батареи, управление спящим режимом. Используется ноутбуками и мобильными устройствами.",
+    "setupapi.dll": "SetupAPI — Setup API: установка и удаление устройств Plug and Play, драйверов, классов устройств. Взаимодействие с диспетчером устройств Windows.",
+    "winspool.drv": "Winspool.drv — Windows Spooler: управление принтерами и очередями печати (добавление/удаление принтеров, отправка заданий печати, получение статуса).",
+    "pdh.dll": "PDH — Performance Data Helper: сбор данных о производительности системы (счётчики производительности CPU, памяти, дисков, сети). Используется Performance Monitor и другими инструментами мониторинга.",
+    "sfc.dll": "SFC — System File Checker: проверка целостности системных файлов. Сравнивает хеши защищённых файлов с эталонными значениями и восстанавливает повреждённые версии.",
+    "sfc_os.dll": "SFC_OS — System File Checker OS Support: вспомогательная библиотека для SFC, обеспечивающая низкоуровневый доступ к защищённым системным файлам.",
+    "apphelp.dll": "AppHelp — Application Compatibility: реализация механизма совместимости приложений (shim engine). Позволяет старым приложениям работать на новых версиях Windows через слой совместимости.",
+    "profapi.dll": "ProfApi — Profile API: управление пользовательскими профилями. Загрузка и выгрузка профилей, управление реестром профиля, уведомления об изменениях.",
+    "win32u.dll": "Win32U — Windows 32-bit User-mode: содержит реализацию части user32 и gdi32 для поддержки UWP-приложений и изоляции syscall-интерфейса.",
+}
+
+_WINDOWS_USB_DEVICE = {
+    # USB и устройства
+    "winusb.dll": "WinUSB — Windows USB Driver API: предоставляет приложениям прямой доступ к USB-устройствам без написания драйвера. Используется для взаимодействия с пользовательскими USB-устройствами, прошивкой устройств.",
+    "hid.dll": "HID — Human Interface Device API: взаимодействие с HID-устройствами (клавиатуры, мыши, джойстики, сенсорные панели) через стандартизированный протокол USB HID.",
+}
+
+_WINDOWS_DOTNET = {
+    # .NET Runtime
+    "mscoree.dll": "MSCoree — .NET Runtime Execution Engine: точка входа для запуска управляемого кода .NET (CLR). Загружает среду выполнения CLR, обрабатывает манифесты сборок, управляет версионированием.",
+    "mscorlib.dll": "MSCorLib — Multilanguage Standard Common Object Runtime Library: основная библиотека классов .NET Framework (System, System.Collections, System.IO, System.Threading). Содержит фундаментальные типы и базовые классы.",
+    "clr.dll": "CLR — Common Language Runtime: исполняющая среда .NET. Обеспечивает JIT-компиляцию, сборку мусора, управление исключениями, безопасность доступа к коду (CAS).",
+    "clrjit.dll": "CLRJIT — CLR Just-In-Time Compiler: компилятор MSIL в машинный код во время выполнения. Оптимизирует производительность .NET приложений.",
+}
+
+_WINDOWS_SUBSYSTEM_COMPAT = {
+    # Подсистемы совместимости
+    "wow64.dll": "WOW64 — Windows on Windows 64: эмуляция 32-битной среды на 64-битной Windows. Транслирует 32-битные системные вызовы в 64-битные, управляет реестром и файловой системой для 32-битных приложений.",
+    "wow64cpu.dll": "WOW64 CPU — CPU-специфичная часть WOW64: эмуляция 32-битного режима процессора на архитектуре x86-64.",
+    "wow64win.dll": "WOW64 Win — Windows-специфичная часть WOW64: эмуляция 32-битных Windows API вызовов в 64-битной среде.",
+}
+
+_WINDOWS_API_SETS = {
+    # API Sets (Windows 7+) — виртуальные DLL
+    # Примечание: имена с префиксом api- гарантированно присутствуют на всех версиях Windows.
+    # Имена с префиксом ext- могут отсутствовать на некоторых редакциях.
+    "api-ms-win-core-ums-l1-1-0": "Windows API Set: User-Mode Scheduling (UMS). Обеспечивает планирование потоков в пользовательском режиме.",
+    "ext-ms-win-com-ole32-l1-1-5": "Windows API Set: COM OLE32 расширения. Дополнительные функции Component Object Model для специфических платформ.",
+    "ext-ms-win-ntuser-window-l1-1-0": "Windows API Set: NTUser Window расширения. Функции оконного интерфейса, доступные не на всех редакциях Windows.",
+}
+
+_WINDOWS_SERVER_CORE = {
+    # Компоненты установки Server Core (Microsoft Docs)
+    "cryptdll.dll": "CryptDll — расширение CryptoAPI: дополнительные криптографические функции и управление цифровыми сертификатами.",
+    "cryptnet.dll": "CryptNet — сетевая поддержка для CryptoAPI: проверка сертификатов по сети, работа с CRL (списками отзыва сертификатов).",
+    "credui.dll": "CredUI — Credential User Interface: диалоговое окно для ввода, сохранения и управления учётными данными пользователя (пароли, PIN-коды, сертификаты).",
+}
+
+_WINDOWS_OPENSSL_MODERN = {
+    # Современные имена OpenSSL (1.1+)
+    "libcrypto-1_1-x64.dll": "OpenSSL 1.1+ Encryption Library (64-bit) — современная криптографическая библиотека OpenSSL.",
+    "libssl-1_1-x64.dll": "OpenSSL 1.1+ SSL/TLS Library (64-bit) — реализация протоколов TLS/SSL.",
+    "libcrypto-1_1.dll": "OpenSSL 1.1+ Encryption Library (32-bit) — 32-битная версия криптографической библиотеки OpenSSL.",
+    "libssl-1_1.dll": "OpenSSL 1.1+ SSL/TLS Library (32-bit) — 32-битная реализация TLS/SSL.",
+}
+
+_WINDOWS_BCRYPTPRIMITIVES = {
+    "bcryptprimitives.dll": "BCryptPrimitives — высокопроизводительные криптографические примитивы Windows (симметричное шифрование, хеширование). Фундамент для bcrypt.dll.",
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LINUX — системные библиотеки (LSB, Linux Foundation, GNU)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_LINUX_CORE_LIBS = {
+    # Базовые системные библиотеки
+    "libc.so.6": "GNU C Library (glibc) — основная библиотека языка C. Реализует стандарт ISO C (printf, malloc, fopen, memcpy) и интерфейс системных вызовов POSIX (open, read, write, fork, exec). Является обязательной для всех пользовательских программ Linux. Включает поддержку многопоточности (libpthread) и динамической загрузки (libdl) начиная с glibc 2.34.",
+    "libm.so.6": "Math Library (libm) — математическая библиотека, реализующая функции с плавающей точкой (sin, cos, sqrt, log, pow), соответствующие стандарту IEEE 754. Используется всеми вычислительными и научными приложениями.",
+    "libdl.so.2": "Dynamic Linker Library (libdl) — поддержка динамической загрузки разделяемых объектов. Функции dlopen(), dlsym(), dlclose() для загрузки библиотек во время выполнения. Критически важна для плагинных архитектур и интерпретируемых языков (Python, Lua). Начиная с glibc 2.34 функциональность встроена в libc.",
+    "libpthread.so.0": "POSIX Threads Library (libpthread) — реализация многопоточности по стандарту POSIX. Управление потоками, мьютексами, условными переменными, барьерами, блокировками чтения/записи. Начиная с glibc 2.34 встроена в libc.",
+    "librt.so.1": "POSIX Real-time Extensions — расширения реального времени: семафоры POSIX, очереди сообщений, разделяемая память, таймеры высокого разрешения, асинхронный ввод/вывод (AIO).",
+    "libresolv.so.2": "DNS Resolver Library — функции для разрешения доменных имён (DNS). Реализует gethostbyname(), getaddrinfo(), работу с /etc/resolv.conf.",
+    "libnsl.so.1": "Network Services Library — сетевые службы: работа с NIS (Network Information Service), сетевыми базами данных (ethers, netgroup, rpc).",
+    "libutil.so.1": "Utility Library — вспомогательные функции: работа с терминалом (openpty, forkpty), управление учётными записями (login, logout).",
+    "libcrypt.so.1": "Crypt Library — шифрование и хеширование паролей. Функции crypt(), crypt_r(), encrypt() для одностороннего хеширования DES, MD5, SHA-256/512.",
+    "libanl.so.1": "Asynchronous Name Lookup Library — асинхронное разрешение имён хостов без блокировки вызывающего потока.",
+}
+
+_LINUX_DYNAMIC_LINKER = {
+    # Динамический компоновщик
+    "ld-linux.so.2": "Dynamic Linker/Loader (32-bit) — загружает исполняемые файлы ELF, разрешает зависимости разделяемых библиотек, выполняет релокации. Для архитектуры x86.",
+    "ld-linux-x86-64.so.2": "Dynamic Linker/Loader (x86-64) — то же для 64-битной архитектуры x86-64.",
+    "ld-linux-aarch64.so.1": "Dynamic Linker/Loader (AArch64) — то же для архитектуры ARM 64-bit.",
+    "ld-linux-armhf.so.3": "Dynamic Linker/Loader (ARM hard-float) — то же для архитектуры ARM с аппаратной поддержкой floating-point.",
+    "linux-vdso.so.1": "Linux Virtual Dynamic Shared Object — виртуальная библиотека, внедряемая ядром в адресное пространство каждого процесса. Предоставляет оптимизированные реализации часто используемых системных вызовов (gettimeofday, clock_gettime) без переключения в режим ядра.",
+}
+
+_LINUX_SYSTEM_SERVICES = {
+    # Системные службы
+    "libdbus-1.so.3": "D-Bus Message Bus System — система межпроцессного взаимодействия (IPC). Обеспечивает обмен сообщениями между приложениями и службами, включая шину system bus (системные события, уведомления оборудования) и session bus (пользовательские приложения, desktop environment).",
+    "libsystemd.so.0": "Systemd Client Library — интерфейс для взаимодействия с системным менеджером systemd. Управление службами, сокетами, таймерами, журналами. Используется современными дистрибутивами Linux (Fedora, Ubuntu, Debian).",
+    "libudev.so.1": "Udev Device Manager Library — интерфейс к менеджеру устройств Linux. Обнаружение, перечисление и управление устройствами (udev). Критически важен для корректной работы драйверов и пользовательских приложений, взаимодействующих с аппаратурой.",
+}
+
+_LINUX_SECURITY = {
+    # Безопасность
+    "libpam.so.0": "Pluggable Authentication Modules (PAM) — гибкая система аутентификации. Позволяет настраивать способы проверки подлинности пользователей (пароль, биометрия, токены, LDAP, Kerberos).",
+    "libcap.so.2": "Linux Capabilities Library — управление POSIX capabilities. Позволяет предоставлять процессам отдельные привилегии суперпользователя без полного доступа root.",
+    "libseccomp.so.2": "Secure Computing Mode (seccomp) Library — фильтрация системных вызовов. Позволяет процессам ограничивать набор доступных системных вызовов для повышения безопасности (используется в sandbox-средах, контейнерах, браузерах).",
+    "libselinux.so.1": "SELinux Userspace Library — интерфейс к Security-Enhanced Linux. Управление контекстами безопасности, политиками, метками файлов. Обязательное управление доступом (MAC) для Linux.",
+    "libaudit.so.1": "Audit Library — система аудита Linux. Предоставляет API для отслеживания событий безопасности, системных вызовов и изменений файлов в соответствии с настроенными правилами аудита.",
+}
+
+_LINUX_COMPILER_RUNTIME = {
+    # Компиляторное окружение
+    "libgcc_s.so.1": "GCC Runtime Library — библиотека поддержки выполнения для кода, скомпилированного GCC. Содержит обработчики исключений (DWARF, SJLJ), арифметику с плавающей точкой, эмуляцию отсутствующих инструкций.",
+    "libstdc++.so.6": "GNU Standard C++ Library — реализация стандартной библиотеки C++ (libstdc++). Включает STL (std::string, std::vector, std::map), потоки ввода-вывода (iostream), работу с файлами. Требуется для всех C++ приложений на Linux.",
+}
+
+_LINUX_COMPRESSION = {
+    # Сжатие
+    "libz.so.1": "Zlib Compression Library — реализация алгоритма сжатия DEFLATE. Используется для сжатия/распаковки данных в форматах gzip, zlib, PNG, HTTP.",
+    "libbz2.so.1": "Bzip2 Compression Library — алгоритм сжатия Burrows-Wheeler (bzip2). Обеспечивает более высокую степень сжатия по сравнению с zlib, но работает медленнее.",
+    "liblzma.so.5": "LZMA Compression Library — реализация алгоритма сжатия LZMA (XZ). Используется в пакетных менеджерах (dpkg, rpm), systemd, и многих других системных компонентах.",
+}
+
+_LINUX_XML_PARSING = {
+    # Парсинг XML
+    "libxml2.so.2": "Libxml2 — XML-парсер. Предоставляет полный набор функций для разбора, валидации и манипуляции XML-документами. Поддерживает DTD, XPath, XInclude, каталоги.",
+    "libexpat.so.1": "Expat — потоковый XML-парсер. Быстрый, не требующий валидации парсер XML. Используется во многих проектах (Python, Apache, Firefox).",
+    "libxslt.so.1": "Libxslt — XSLT-процессор. Применяет XSL-трансформации к XML-документам для преобразования в другие форматы (HTML, текст, XML).",
+}
+
+_LINUX_DATABASE = {
+    # Базы данных
+    "libsqlite3.so.0": "SQLite Database Engine — встраиваемая реляционная база данных. Не требует сервера, хранит всю базу в одном файле. Используется практически во всех приложениях и системах.",
+}
+
+_LINUX_SYSTEMD_LIBS = {
+    # Библиотеки экосистемы systemd
+    "libsystemd-shared.so": "Systemd Internal Shared Library — общий код для всех компонентов systemd (journal, pid1, logind, resolved).",
+    "libmount.so.1": "Libmount — монтирование и размонтирование файловых систем. Основа утилит mount/umount.",
+    "libkmod.so.2": "Libkmod — управление модулями ядра (загрузка, выгрузка, получение информации).",
+    "libblkid.so.1": "Libblkid — идентификация блочных устройств по сигнатурам файловых систем.",
+}
+
+_LINUX_SECURITY_EXTRA = {
+    # Дополнительные средства безопасности
+    "libapparmor.so.1": "AppArmor Library — интерфейс к системе принудительного контроля доступа AppArmor. Ограничивает возможности приложений на основе профилей безопасности.",
+    "libcap-ng.so.0": "Libcap-ng — упрощённое управление POSIX capabilities (альтернатива libcap). Позволяет процессам получать только необходимые привилегии.",
+}
+
+_LINUX_CRYPTO_EXTRA = {
+    "libgcrypt.so.20": "Libgcrypt — криптографическая библиотека общего назначения (GnuPG, systemd, другие проекты).",
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANDROID — системные библиотеки (AOSP, Android NDK)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ANDROID_CORE = {
+    # Базовые библиотеки Android
+    "libc.so": "Bionic libc — реализация стандартной библиотеки C для Android. Включает функции стандарта C11 (printf, malloc, fopen), системные вызовы Linux, и — в отличие от glibc — включает поддержку многопоточности (pthread), динамической загрузки (dl), и real-time-расширений без отдельных библиотек.",
+    "libm.so": "Bionic libm — математическая библиотека Android. Реализует математические функции (sin, cos, sqrt, log, pow) с плавающей точкой. Автоматически линкуется сборочной системой, как и libc.",
+    "libdl.so": "Bionic libdl — поддержка динамической загрузки библиотек (dlopen, dlsym, dlclose). Необходима для плагинов и интерпретируемых языков на Android.",
+    "libstdc++.so": "GNU libstdc++ для Android — реализация стандартной библиотеки C++ для Android. Предоставляет STL и потоки ввода-вывода для C++ приложений.",
+    "liblog.so": "Android Logging Library — система логирования Android. Предоставляет API для записи сообщений в системный журнал logcat. Используется всеми компонентами системы, от ядра до приложений, для диагностики и отладки.",
+    "libcutils.so": "Android C Utilities — набор утилит на языке C для системного программирования Android: работа с сокетами, атомарные операции, управление процессами, конфигурация системы.",
+    "libutils.so": "Android Utilities — вспомогательные классы C++: работа со строками (String8, String16), потоками (Thread, Mutex, Condition), IPC (Binder), логирование. Базовый инструментарий для всех системных служб Android.",
+}
+
+_ANDROID_BINDER = {
+    # Подсистема Binder (IPC)
+    "libbinder.so": "Binder IPC Library — реализация механизма межпроцессного взаимодействия Binder. Позволяет процессам вызывать методы объектов в других процессах с проверкой разрешений и автоматической сериализацией/десериализацией параметров. Является центральной технологией IPC в Android, через которую работают все системные службы.",
+}
+
+_ANDROID_HARDWARE = {
+    # Аппаратное взаимодействие
+    "libhardware.so": "Hardware Abstraction Library (HAL) — интерфейс между Android framework и аппаратными драйверами. Предоставляет стандартизированный способ доступа к оборудованию (сенсоры, камера, аудио, GPS) через общий API.",
+    "libhardware_legacy.so": "Legacy Hardware Library — поддержка устаревшего оборудования и обратная совместимость со старыми драйверами Android.",
+}
+
+_ANDROID_NATIVE_WINDOW = {
+    # Графика и GUI
+    "libandroid.so": "Android Native Window API — интерфейс для работы с native-окнами. Предоставляет управление буферами кадров, форматами пикселей, синхронизацией с системой композиции SurfaceFlinger.",
+    "libgui.so": "Android GUI Library — управление буферами графики, работа с Surface и SurfaceComposerClient. Связующее звено между приложениями и системой отображения.",
+    "libui.so": "Android UI Library — низкоуровневые графические примитивы: управление регионами, форматами пикселей, объектами GraphicBuffer.",
+    "libEGL.so": "EGL Library — интерфейс между API рендеринга (OpenGL ES) и оконной системой Android. Управление контекстами, поверхностями, конфигурациями дисплея.",
+    "libGLESv1_CM.so": "OpenGL ES 1.x — реализация фиксированного графического конвейера OpenGL ES 1.0/1.1 для Android.",
+    "libGLESv2.so": "OpenGL ES 2.0 — реализация программируемого графического конвейера с поддержкой вершинных и фрагментных шейдеров.",
+    "libGLESv3.so": "OpenGL ES 3.x — реализация расширенного графического API с поддержкой множественных буферов рендеринга, compute-шейдеров и улучшенного сжатия текстур.",
+}
+
+_ANDROID_MEDIA = {
+    # Мультимедиа
+    "libmedia.so": "Android Media Library — воспроизведение и запись аудио/видео. Управление кодеками, форматами, синхронизация аудио-видео потоков.",
+    "libstagefright.so": "Stagefright Media Engine — нативный медиа-фреймворк Android. Кодеки, форматы, потоковая передача, DRM. Основной движок воспроизведения мультимедиа в Android.",
+    "libstagefright_foundation.so": "Stagefright Foundation — базовые классы для Stagefright: управление памятью, метаданные, синхронизация.",
+    "libmediandk.so": "Media NDK API — предоставляет доступ к аудио- и видеокодекам через стандартный интерфейс NDK для нативных приложений.",
+    "libaudioutils.so": "Audio Utilities Library — вспомогательные функции для обработки звука: преобразование форматов, ресемплинг, микширование.",
+    "libsonivox.so": "Sonivox MIDI Synthesizer — программный MIDI-синтезатор для воспроизведения MIDI-файлов и генерации звуковых эффектов.",
+}
+
+_ANDROID_GRAPHICS = {
+    # Дополнительная графика
+    "libhwui.so": "Hardware UI Renderer (libhwui) — аппаратно-ускоренный рендерер пользовательского интерфейса Android. Использует Skia для 2D-графики и OpenGL ES/Vulkan для рендеринга. Отрисовывает View-иерархию в Android-приложениях.",
+    "libandroidfw.so": "Android Framework Library — управление ресурсами (res/values/*.xml), темами, конфигурациями, ассетами приложений.",
+    "libETC1.so": "ETC1 Texture Compression — поддержка формата сжатия текстур ETC1, используемого для экономии памяти GPU на Android-устройствах.",
+    "libjpeg.so": "JPEG Library — кодирование и декодирование изображений в формате JPEG.",
+    "libpng.so": "PNG Library — кодирование и декодирование изображений в формате PNG.",
+}
+
+_ANDROID_NETWORK = {
+    # Сеть
+    "libnetutils.so": "Android Network Utilities — управление сетевыми интерфейсами, DHCP-клиент, настройка маршрутизации.",
+}
+
+_ANDROID_BLUETOOTH = {
+    # Bluetooth
+    "libbluetooth.so": "Android Bluetooth Stack — реализация стека Bluetooth (BlueZ/Bluedroid). Управление адаптерами, профилями, сопряжением устройств.",
+    "libbluetooth_jni.so": "Bluetooth JNI — прослойка между Java Bluetooth API и нативной реализацией.",
+}
+
+_ANDROID_RUNTIME = {
+    # Среда выполнения
+    "libandroid_runtime.so": "Android Runtime JNI — мост между Java-фреймворком Android и нативным кодом. Содержит JNI-вызовы для всех системных служб.",
+    "libdvm.so": "Dalvik Virtual Machine (устарело) — виртуальная машина Dalvik. Использовалась в Android до версии 4.4. Заменена на ART (Android Runtime).",
+    "libart.so": "Android Runtime (ART) — современная среда выполнения Android. Ahead-of-Time (AOT) компиляция, сборка мусора, профилирование.",
+}
+
+_ANDROID_NETWORK_MONITORING = {
+    # Сетевой мониторинг
+    "libnetd_client.so": "Netd Client Library — клиентская библиотека для взаимодействия с сетевым демоном Android. Управление DNS, маршрутизацией, tethering.",
+}
+
+_ANDROID_CRYPTO = {
+    # Криптография
+    "libcrypto.so": "OpenSSL Crypto (Android) — криптографические операции на Android: шифрование, хеширование, цифровые подписи, генерация ключей.",
+    "libssl.so": "OpenSSL SSL/TLS (Android) — реализация протоколов SSL/TLS на Android для защищённых сетевых соединений.",
+}
+
+_ANDROID_NDK = {
+    # Графика и вычисления
+    "libvulkan.so": "Vulkan API (Android) — низкоуровневый графический и вычислительный API. Обеспечивает высокую производительность в играх и требовательных приложениях.",
+    "libneuralnetworks.so": "Android Neural Networks API (NNAPI) — аппаратно-ускоренный вывод нейронных сетей на устройстве. Используется для задач машинного обучения.",
+}
+
+_ANDROID_ICU = {
+    # Интернационализация (International Components for Unicode)
+    "libicui18n.so": "ICU Internationalization — форматирование дат, чисел, валют, сообщений, правила сортировки для множества языков.",
+    "libicuuc.so": "ICU Common — базовые службы Unicode: преобразование кодировок, работа с текстом, нормализация.",
+}
+
+_ANDROID_CAMERA = {
+    "libcamera_client.so": "Android Camera Client — клиентская библиотека для взаимодействия с сервисом камеры. Используется приложениями для доступа к камере.",
+    "libcamera2ndk.so": "Android Camera2 NDK — нативный API для управления камерой (фокус, экспозиция, захват кадров) через Android NDK.",
+}
+
+_ANDROID_MEDIA_NDK = {
+    "libmediandk.so": "Media NDK — нативный доступ к аудио- и видеокодекам Android. Позволяет декодировать и кодировать медиапотоки в C/C++ приложениях.",
+}
+
+_ANDROID_AUDIO = {
+    "libOpenSLES.so": "OpenSL ES (Android) — нативный аудио API для высокопроизводительного воспроизведения и записи звука. Альтернатива AAudio.",
+}
+
+_ANDROID_JNI = {
+    "libnativehelper.so": "Native Helper — вспомогательная библиотека JNI, упрощающая взаимодействие между Java и C/C++ кодом в Android Runtime.",
+}
+
+_ANDROID_EXPAT = {
+    "libexpat.so": "Expat XML Parser (Android) — потоковый парсер XML, используемый системными компонентами Android.",
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# macOS / iOS — системные библиотеки (Apple Developer, opensource.apple.com)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_MACOS_CORE = {
+    # Базовые системные библиотеки macOS / iOS
+    "libSystem.dylib": "Apple System Library — фундаментальная библиотека Darwin (macOS/iOS). Предоставляет тысячи базовых C-функций, формирующих настоящие «Core OS» службы. Включает в себя libc (стандартная библиотека C), libm (математика), libpthread (потоки POSIX), libdl (динамическая загрузка), libkvm (виртуальная память ядра), libinfo (NetInfo), libdbm (база данных). Синонимы libSystem.B.dylib и libSystem.C.dylib. Является единственной обязательной системной библиотекой для всех приложений Darwin.",
+    "libSystem.B.dylib": "Apple System Library версии B — вариант libSystem.dylib. Обеспечивает обратную совместимость и плавное обновление системных компонентов без нарушения работы приложений.",
+    "libc++.dylib": "Apple C++ Standard Library — реализация стандартной библиотеки C++ (libc++) для Darwin. Включает STL, потоки ввода-вывода, работу с файлами. Более современная альтернатива libstdc++.",
+    "libc++abi.dylib": "Apple C++ ABI Library — поддержка ABI (Application Binary Interface) для C++: проброс исключений, динамическое приведение типов (dynamic_cast), RTTI.",
+    "libobjc.A.dylib": "Objective-C Runtime — среда выполнения языка Objective-C. Реализует посылку сообщений (objc_msgSend), управление классами, протоколами, категориями. Фундамент всех Cocoa/Cocoa Touch приложений.",
+    "libobjc.B.dylib": "Objective-C Runtime версии B — вариант libobjc с улучшенной производительностью и новыми возможностями среды выполнения (Associated Objects, Method Swizzling).",
+}
+
+_MACOS_DISPATCH = {
+    # Grand Central Dispatch
+    "libdispatch.dylib": "Grand Central Dispatch (GCD) — библиотека для организации параллельных вычислений. Предоставляет очереди (dispatch queues), группы, семафоры, таймеры, управление пулом потоков. Фундаментальная технология многозадачности в macOS и iOS.",
+}
+
+_MACOS_FOUNDATION = {
+    # Foundation и Core Services
+    "libicucore.dylib": "ICU (International Components for Unicode) — библиотека для работы с Unicode. Обеспечивает правила сортировки, форматирования дат/чисел/валют, регулярные выражения, анализ текста. Используется Foundation для всех операций со строками.",
+    "libiconv.dylib": "Libiconv — преобразование между различными кодировками текста (UTF-8, UTF-16, ISO-8859-*, Windows-*, KOI8-R, Shift-JIS и многими другими). Критически важна для интернационализации приложений.",
+}
+
+_MACOS_NETWORK = {
+    # Сетевые библиотеки
+    "libnetwork.dylib": "Apple Network Library — современная сетевая библиотека Apple. Асинхронные соединения, TLS, управление состоянием сети, мониторинг connectivity. Используется URLSession и другими высокоуровневыми API.",
+    "libcurl.dylib": "Curl Library (Apple) — библиотека для работы с URL (HTTP, HTTPS, FTP и т.д.). Версия, поставляемая Apple в составе macOS.",
+}
+
+_MACOS_DATABASE = {
+    # Базы данных
+    "libsqlite3.dylib": "SQLite Database Engine (Apple) — встраиваемая база данных SQLite. Используется практически всеми приложениями macOS/iOS для локального хранения данных (Core Data, настройки приложений, кэши, Spotlight).",
+}
+
+_MACOS_SWIFT = {
+    # Swift Runtime
+    "libswiftCore.dylib": "Swift Core Library — среда выполнения языка Swift. Реализует базовые типы (String, Array, Dictionary, Int), протоколы (Equatable, Hashable, Codable), управление памятью (ARC). Требуется для всех приложений, написанных на Swift.",
+    "libswiftFoundation.dylib": "Swift Foundation Overlay — прослойка между Swift и Foundation. Предоставляет Swift-идиоматичный доступ к классам Foundation (Date, URL, Bundle, FileManager).",
+    "libswiftUIKit.dylib": "Swift UIKit Overlay — прослойка между Swift и UIKit для приложений iOS.",
+}
+
+_MACOS_CRYPTO = {
+    # Криптография (macOS)
+    "libcrypto.dylib": "Apple Crypto Library — криптографические операции: шифрование (AES, RSA, ECC), хеширование (SHA), цифровые подписи.",
+    "libcommonCrypto.dylib": "CommonCrypto — высокоуровневый криптографический API Apple. Симметричное/асимметричное шифрование, хеши, HMAC, PBKDF2.",
+    "libboringssl.dylib": "BoringSSL (Google/Apple) — форк OpenSSL от Google, используемый Apple. Реализация протоколов SSL/TLS и криптографических примитивов.",
+}
+
+_MACOS_EXPAT = {
+    "libexpat.1.dylib": "Expat XML Parser (macOS) — потоковый парсер XML, используемый системными компонентами.",
+}
+
+_MACOS_FONTCONFIG = {
+    "libfontconfig.1.dylib": "Fontconfig — конфигурация и поиск шрифтов в macOS.",
+}
+
+_MACOS_BORINGSSL = {
+    "libboringssl.dylib": "BoringSSL (Google/Apple) — форк OpenSSL от Google, используемый Apple. Реализация протоколов SSL/TLS и криптографических примитивов.",
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# СТОРОННИЕ БИБЛИОТЕКИ — известные компоненты с открытым исходным кодом
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_THIRD_PARTY_BROWSER = {
+    # Браузерные движки / веб-компоненты
+    "cef.dll": "Chromium Embedded Framework — встраиваемый браузерный движок на базе Chromium (Windows)",
+    "libcef.so": "Chromium Embedded Framework — встраиваемый браузерный движок на базе Chromium (Linux)",
+    "libcef.dylib": "Chromium Embedded Framework — встраиваемый браузерный движок на базе Chromium (macOS)",
+    "awesomium.dll": "Awesomium — встраиваемый браузерный движок на базе Chromium (устарел, заменён на CEF)",
+    "libwebkitgtk-3.0.so": "WebKitGTK — браузерный движок WebKit для GTK-приложений (Linux)",
+    "libwebkit2gtk-4.0.so": "WebKitGTK2 — современная версия WebKit для GTK с поддержкой мультипроцессной архитектуры (Linux)",
+}
+
+_THIRD_PARTY_CRYPTO = {
+    # Криптография и защита
+    "libeay32.dll": "OpenSSL Encryption Library (Windows) — криптографические операции: шифрование, хеширование, цифровые подписи, генерация ключей. Полное название: libeay32 (OpenSSL).",
+    "ssleay32.dll": "OpenSSL SSL/TLS Library (Windows) — реализация протоколов SSL и TLS. Полное название: ssleay32 (OpenSSL).",
+    "libcrypto.so": "OpenSSL/LibreSSL Encryption Library (Linux) — криптографическая библиотека. Используется большинством серверных и сетевых приложений.",
+    "libssl.so": "OpenSSL/LibreSSL SSL/TLS Library (Linux) — реализация протоколов SSL/TLS.",
+    "libsodium.dll": "Libsodium (Windows) — современная, простая в использовании криптографическая библиотека (шифрование, хеширование, подписи, обмен ключами).",
+    "libsodium.so": "Libsodium (Linux) — современная криптографическая библиотека.",
+    "libtls.dll": "LibreSSL TLS Library — реализация TLS от проекта LibreSSL (форк OpenSSL).",
+}
+
+_THIRD_PARTY_COMPRESSION = {
+    # Сжатие и архивация
+    "zlib1.dll": "Zlib Compression Library (Windows) — библиотека сжатия данных. Реализует алгоритм DEFLATE. Используется для gzip, PNG, HTTP сжатия.",
+    "libz.so.1": "Zlib Compression Library (Linux/macOS) — библиотека сжатия данных.",
+    "liblzma.so.5": "LZMA Compression Library — алгоритм сжатия LZMA (XZ). Высокая степень сжатия.",
+    "7z.dll": "7-Zip Compression Engine — движок архивации и сжатия с поддержкой форматов 7z, ZIP, GZIP, BZIP2, TAR, RAR. Обеспечивает одно из лучших соотношений сжатия среди популярных архиваторов.",
+    "libzip.dll": "Libzip (Windows) — библиотека для создания и чтения ZIP-архивов.",
+    "libzip.so": "Libzip (Linux) — библиотека для работы с ZIP-архивами.",
+}
+
+_THIRD_PARTY_DATABASE = {
+    # Базы данных
+    "sqlite3.dll": "SQLite Database Engine (Windows) — встраиваемая реляционная база данных.",
+    "libsqlite3.so.0": "SQLite Database Engine (Linux) — встраиваемая реляционная база данных.",
+    "libmysql.dll": "MySQL Connector/C (Windows) — клиентская библиотека для подключения к серверу MySQL.",
+    "libmysqlclient.so": "MySQL Client Library (Linux) — клиентская библиотека MySQL.",
+    "libpq.dll": "Libpq (Windows) — клиентская библиотека PostgreSQL.",
+    "libpq.so.5": "Libpq (Linux) — клиентская библиотека PostgreSQL.",
+    "libmariadb.so.3": "MariaDB Connector/C — клиентская библиотека MariaDB (форк MySQL).",
+}
+
+_THIRD_PARTY_NETWORK = {
+    # Сетевые библиотеки
+    "libcurl.dll": "Curl Library (Windows) — работа с URL (HTTP, HTTPS, FTP, SMTP, IMAP, LDAP, MQTT и многие другие протоколы).",
+    "libcurl.so.4": "Curl Library (Linux) — работа с URL.",
+    "nghttp2.dll": "Nghttp2 (Windows) — реализация протокола HTTP/2. Обеспечивает мультиплексирование потоков, server push, header compression (HPACK).",
+    "libnghttp2.so.14": "Nghttp2 (Linux) — реализация протокола HTTP/2.",
+    "libssh2.dll": "Libssh2 (Windows) — клиентская библиотека для SSH2-соединений.",
+    "libssh2.so.1": "Libssh2 (Linux) — клиентская библиотека SSH2.",
+}
+
+_THIRD_PARTY_GRAPHICS = {
+    # Графика и GUI
+    "sdl2.dll": "SDL2 (Simple DirectMedia Layer) — кроссплатформенная библиотека для работы с графикой, звуком и устройствами ввода (Windows)",
+    "libsdl2.so.0": "SDL2 (Simple DirectMedia Layer) — кроссплатформенная библиотека для работы с графикой, звуком и устройствами ввода (Linux)",
+    "opencv_core.dll": "OpenCV Core Module (Windows) — библиотека компьютерного зрения: базовые структуры данных и алгоритмы.",
+    "opencv_imgproc.dll": "OpenCV Image Processing Module (Windows) — обработка изображений: фильтры, геометрические преобразования, цветовые пространства.",
+    "libopencv_core.so": "OpenCV Core Module (Linux) — библиотека компьютерного зрения.",
+    "libgtk-3.so.0": "GTK+ 3 Toolkit (Linux) — библиотека графического интерфейса. Создание окон, меню, кнопок и других элементов UI.",
+    "libgtk-4.so.1": "GTK 4 Toolkit (Linux) — современная версия библиотеки графического интерфейса GTK.",
+}
+
+_THIRD_PARTY_LOGGING = {
+    # Логирование
+    "log4cplus.dll": "Log4cplus (Windows) — библиотека логирования для C++. Предоставляет гибкую настройку уровней логирования, форматов вывода (консоль, файл, syslog, сокеты).",
+    "log4cxx.dll": "Log4cxx (Windows) — библиотека логирования для C++ (Apache). Портирована с Java-фреймворка log4j, обеспечивает enterprise-уровень логирования.",
+    "log4net.dll": "Log4net (Windows) — библиотека логирования для .NET (Apache). Позволяет настраивать вывод логов в различные приемники (файлы, базы данных, консоль) через XML-конфигурацию.",
+    "liblog4cplus.so": "Log4cplus (Linux) — библиотека логирования для C++.",
+}
+
+_THIRD_PARTY_XML = {
+    # XML и документы
+    "libpdf.dll": "PDF Library (Windows) — библиотека для работы с PDF-документами: создание, чтение, модификация.",
+    "libxml2.so.2": "Libxml2 (Linux) — XML-парсер.",
+}
+
+_THIRD_PARTY_VIRTUALIZATION = {
+    # Виртуализация / эмуляция
+    "tcg.dll": "QEMU Tiny Code Generator (TCG) — динамический транслятор машинного кода. Используется в QEMU для эмуляции процессоров на других архитектурах путём трансляции гостевых инструкций в хостовые.",
+    "libtcg.so": "QEMU Tiny Code Generator (Linux) — динамический транслятор кода для QEMU.",
+}
+
+_THIRD_PARTY_VPN = {
+    # VPN
+    "wireguard.dll": "WireGuard VPN (Windows) — современный VPN-протокол. Обеспечивает быстрое, безопасное соединение с минимальным кодом.",
+    "libwg.dll": "WireGuard Library (Windows) — библиотека WireGuard.",
+    "openvpn.dll": "OpenVPN Client Library (Windows) — клиентская библиотека для OpenVPN-соединений.",
+}
+
+_THIRD_PARTY_QT = {
+    # Qt Framework
+    "qt5core.dll": "Qt5 Core (Windows) — основа фреймворка: сигналы/слоты, строки, контейнеры, потоки.",
+    "qt5gui.dll": "Qt5 GUI (Windows) — графический интерфейс: окна, виджеты, OpenGL.",
+    "qt5widgets.dll": "Qt5 Widgets (Windows) — классические виджеты (кнопки, списки, таблицы).",
+    "qt6core.dll": "Qt6 Core (Windows) — основа Qt6.",
+    "qt6gui.dll": "Qt6 GUI (Windows) — графический интерфейс Qt6.",
+}
+
+_THIRD_PARTY_ML_MORE = {
+    "libtorch.dll": "LibTorch — C++ API для PyTorch. Обучение и инференс нейронных сетей с поддержкой GPU (CUDA).",
+    "libtorch.so": "LibTorch — PyTorch C++ API (Linux)",
+    "torch_cuda.dll": "Torch CUDA — модуль PyTorch для GPU-вычислений NVIDIA (CUDA).",
+    "libtensorflow_lite.so": "TensorFlow Lite — облегчённый инференс ML-моделей на мобильных устройствах (Android, iOS) и встраиваемых системах.",
+    "tensorflow_lite.dll": "TensorFlow Lite — инференс ML (Windows)",
+    "caffe.dll": "Caffe — фреймворк глубокого обучения. Свёрточные нейронные сети, классификация изображений, сегментация.",
+    "libcaffe.so": "Caffe — глубокое обучение (Linux)",
+    "libopenblas.dll": "OpenBLAS — оптимизированная библиотека линейной алгебры (BLAS, LAPACK). Ускорение матричных операций на CPU.",
+    "libopenblas.so.0": "OpenBLAS — линейная алгебра (Linux)",
+    "libarmadillo.dll": "Armadillo — библиотека линейной алгебры (матрицы, векторы, разложения) с синтаксисом, похожим на MATLAB.",
+    "libarmadillo.so.10": "Armadillo — линейная алгебра (Linux)",
+    "libgsl.dll": "GSL — GNU Scientific Library. Обширная коллекция математических функций (спецфункции, БПФ, статистика, интегрирование, Монте-Карло).",
+    "libgsl.so.25": "GSL — научная библиотека (Linux)",
+    "libfftw3.dll": "FFTW — Fastest Fourier Transform in the West. Высокопроизводительное быстрое преобразование Фурье.",
+    "libfftw3.so.3": "FFTW — БПФ (Linux)",
+    "libgmp-10.dll": "GMP — GNU Multiple Precision. Арифметика произвольной точности (целые, рациональные, плавающие).",
+    "libgmp.so.10": "GMP — арифметика произвольной точности (Linux)",
+    "libmpfr.dll": "MPFR — многократная точность плавающей запятой с правильным округлением (расширение GMP).",
+    "libmpfr.so.6": "MPFR — точная плавающая арифметика (Linux)",
+    "libnvinfer.dll": "NVIDIA TensorRT — высокопроизводительный инференс глубокого обучения (оптимизация под GPU NVIDIA).",
+    "libnvinfer.so.10": "TensorRT — инференс ML (Linux)",
+}
+
+
+_THIRD_PARTY_ML = {
+    # Машинное обучение
+    "tensorflow.dll": "TensorFlow C API — библиотека машинного обучения. Поддержка нейронных сетей, градиентного спуска, автоматического дифференцирования.",
+    "onnxruntime.dll": "ONNX Runtime — выполнение моделей машинного обучения в формате ONNX. Кроссплатформенный и оптимизированный для инференса.",
+}
+
+_THIRD_PARTY_RPC = {
+    # RPC и сериализация
+    "grpc.dll": "gRPC — высокопроизводительный фреймворк для удалённых вызовов процедур (RPC). Использует Protocol Buffers для сериализации и HTTP/2 для транспорта.",
+    "protobuf.dll": "Protocol Buffers — библиотека сериализации структурированных данных. Обеспечивает компактное, быстрое бинарное представление для обмена между сервисами.",
+}
+
+_THIRD_PARTY_JAVASCRIPT = {
+    # JavaScript-движки
+    "v8.dll": "Google V8 JavaScript Engine — высокопроизводительный движок JavaScript. Используется в Chrome, Node.js и других проектах. Обеспечивает JIT-компиляцию JavaScript в машинный код.",
+}
+
+_THIRD_PARTY_IMAGE = {
+    "libjpeg-8.dll": "LibJPEG — кодирование/декодирование JPEG (формат сжатых фотографических изображений с потерями).",
+    "libjpeg.so.8": "LibJPEG — кодирование/декодирование JPEG (Linux)",
+    "libjpeg.dylib": "LibJPEG — кодирование/декодирование JPEG (macOS)",
+    "libpng16.dll": "LibPNG — чтение/запись изображений PNG (Portable Network Graphics — сжатие без потерь с поддержкой прозрачности).",
+    "libpng16.so.16": "LibPNG — чтение/запись PNG (Linux)",
+    "libpng.dylib": "LibPNG — чтение/запись PNG (macOS)",
+    "libtiff-5.dll": "LibTIFF — работа с TIFF (формат для хранения растровых изображений с высоким качеством, используется в полиграфии и медицине).",
+    "libtiff.so.5": "LibTIFF — работа с TIFF (Linux)",
+    "libtiff.dylib": "LibTIFF — работа с TIFF (macOS)",
+    "libwebp.dll": "LibWebP — кодирование/декодирование WebP (современный формат сжатия от Google с поддержкой прозрачности и анимации, превосходит PNG и JPEG).",
+    "libwebp.so.7": "LibWebP — кодирование/декодирование WebP (Linux)",
+    "libvips-42.dll": "LibVips — высокопроизводительная потоковая обработка изображений без распаковки целиком в память (поддерживает JPEG, PNG, TIFF, WebP, HEIC, PDF, SVG).",
+    "libvips.so.42": "LibVips — потоковая обработка изображений (Linux)",
+    "ImageMagick.dll": "ImageMagick — создание, редактирование, компоновка и конвертация растровых изображений (поддерживает >200 форматов: JPEG, PNG, SVG, PDF, GIF, TIFF, HEIC, WebP).",
+    "libGraphicsMagick-3.Q16.dll": "GraphicsMagick — форк ImageMagick с улучшенной стабильностью и многопоточной обработкой изображений.",
+    "libGraphicsMagick.so.3": "GraphicsMagick — обработка изображений (Linux)",
+    "libopenjp2.dll": "OpenJPEG — реализация JPEG 2000 (формат сжатия с вейвлет-преобразованием, используется в архивах, медицине и цифровом кино).",
+    "libopenjp2.so.7": "OpenJPEG — JPEG 2000 (Linux)",
+    "libraw.dll": "LibRaw — чтение RAW-файлов цифровых камер (CR2, NEF, ARW, DNG), извлечение метаданных и предварительная обработка перед конвертацией.",
+    "libraw.so.23": "LibRaw — чтение RAW (Linux)",
+    "libjxl.dll": "LibJXL — JPEG XL (новый формат сжатия следующего поколения с поддержкой lossless, HDR, анимации и прогрессивной загрузки).",
+    "libjxl.so.0": "LibJXL — JPEG XL (Linux)",
+}
+
+
+_THIRD_PARTY_AUDIO = {
+    "libmpg123.dll": "libmpg123 — быстрый декодер MPEG Audio Layer 1/2/3 (MP3) для воспроизведения и конвертации аудио.",
+    "libmpg123.so.0": "libmpg123 — декодер MP3 (Linux)",
+    "libmp3lame.dll": "LAME — кодировщик MP3 (MPEG Audio Layer III). Создание MP3-файлов из несжатых аудиоданных.",
+    "libmp3lame.so.0": "LAME — кодировщик MP3 (Linux)",
+    "libvorbis.dll": "LibVorbis — кодирование/декодирование Ogg Vorbis (свободный формат сжатия аудио с потерями без патентных ограничений, альтернатива MP3).",
+    "libvorbis.so.0": "LibVorbis — кодирование/декодирование Ogg Vorbis (Linux)",
+    "libvorbisfile.dll": "LibVorbisFile — высокоуровневый API для чтения Ogg Vorbis из файлов.",
+    "libvorbisfile.so.3": "LibVorbisFile — API для чтения Ogg Vorbis (Linux)",
+    "libogg.dll": "LibOgg — работа с контейнерным форматом Ogg (основа для Vorbis, Theora, Opus, FLAC).",
+    "libogg.so.0": "LibOgg — контейнер Ogg (Linux)",
+    "libopus.dll": "Opus — современный аудиокодек с низкой задержкой (используется в VoIP, WebRTC, потоковом аудио; объединяет технологии SILK и CELT).",
+    "libopus.so.0": "Opus — аудиокодек (Linux)",
+    "libFLAC.dll": "FLAC — Free Lossless Audio Codec. Сжатие аудио без потерь качества.",
+    "libFLAC.so.8": "FLAC — сжатие аудио без потерь (Linux)",
+    "libsndfile-1.dll": "LibSndFile — чтение/запись звуковых файлов (WAV, AIFF, AU, FLAC, и многие другие) через единый API без необходимости знать формат.",
+    "libsndfile.so.1": "LibSndFile — работа со звуковыми файлами (Linux)",
+    "libasound.so.2": "ALSA — Advanced Linux Sound Architecture. Низкоуровневый звуковой API для Linux.",
+    "libpulse.so.0": "PulseAudio — звуковой сервер для Linux (микширование, маршрутизация, сетевая передача звука).",
+    "openal32.dll": "OpenAL — кроссплатформенное 3D-позиционирование звука (эффекты окружения, доплер-эффект, используется в играх и симуляторах).",
+    "libopenal.so.1": "OpenAL — 3D-звук (Linux)",
+    "libportaudio-2.dll": "PortAudio — кроссплатформенный аудиоввод/вывод с низкой задержкой (используется Audacity, Python PyAudio, профессиональными DAW).",
+    "libportaudio.so.2": "PortAudio — аудиоввод/вывод (Linux)",
+    "libsoxr.dll": "libsoxr — высококачественный ресемплинг (изменение частоты дискретизации) аудио.",
+    "libsoxr.so.0": "libsoxr — ресемплинг аудио (Linux)",
+}
+
+_THIRD_PARTY_CV = {
+    "opencv_world480.dll": "OpenCV World — объединённый модуль OpenCV (компьютерное зрение: обнаружение объектов, трекинг, сегментация, калибровка камер, стереозрение).",
+    "libopencv_world.so.408": "OpenCV World — компьютерное зрение (Linux)",
+    "opencv_core480.dll": "OpenCV Core — базовые структуры данных и алгоритмы: матрицы, массивы, линейная алгебра, работа с памятью.",
+    "opencv_imgproc480.dll": "OpenCV Image Processing — фильтры, геометрические преобразования, цветовые пространства, гистограммы.",
+    "opencv_dnn480.dll": "OpenCV DNN — инференс нейронных сетей (TensorFlow, Caffe, ONNX, PyTorch) внутри OpenCV.",
+    "opencv_face480.dll": "OpenCV Face — обнаружение и распознавание лиц (LBPH, EigenFaces, FisherFaces).",
+    "opencv_objdetect480.dll": "OpenCV Object Detection — детекторы объектов (HOG, Haar Cascades, QR-коды).",
+    "opencv_calib3d480.dll": "OpenCV Calib3D — калибровка камер, стереозрение, восстановление 3D-структуры.",
+}
+
+_THIRD_PARTY_RPC_MORE = {
+    "libzmq.dll": "ZeroMQ — высокопроизводительная асинхронная библиотека обмена сообщениями (внутрипроцессный, межпроцессный, TCP, multicast).",
+    "libzmq.so.5": "ZeroMQ — обмен сообщениями (Linux)",
+    "libnanomsg.dll": "Nanomsg — лёгкая библиотека обмена сообщениями (предшественник ZeroMQ, фиксированный набор транспортных протоколов).",
+    "libnanomsg.so.5": "Nanomsg — обмен сообщениями (Linux)",
+    "libnng.dll": "NNG — Nanomsg Next Generation. Современная библиотека обмена сообщениями с поддержкой TLS, HTTP и WebSocket.",
+    "libnng.so.1": "NNG — обмен сообщениями (Linux)",
+    "librabbitmq.dll": "RabbitMQ C Client — AMQP-клиент для взаимодействия с брокером сообщений RabbitMQ.",
+    "librabbitmq.so.4": "RabbitMQ C Client — AMQP (Linux)",
+    "libkafka.dll": "librdkafka — клиент Apache Kafka (очереди сообщений) на C/C++. Высокопроизводительный продюсер/консьюмер событий.",
+    "librdkafka.so.1": "librdkafka — клиент Kafka (Linux)",
+    "libmsgpackc.dll": "MessagePack — бинарная сериализация (компактнее JSON, быстрее).",
+    "libmsgpackc.so.2": "MessagePack — сериализация (Linux)",
+    "libavlrcodec.dll": "Avro C — сериализация данных в формат Apache Avro (используется Kafka, Hadoop).",
+    "libavro.so.23": "Avro — сериализация (Linux)",
+    "libcapnp.dll": "Cap'n Proto — сверхбыстрая сериализация и RPC (разработана создателем Protocol Buffers v2).",
+    "libcapnp.so.1": "Cap'n Proto — сериализация/RPC (Linux)",
+    "flatbuffers.dll": "FlatBuffers — сериализация без копирования в память (разработана Google, используется TensorFlow Lite).",
+    "libflatbuffers.so.1": "FlatBuffers — сериализация (Linux)",
+}
+
+_THIRD_PARTY_GAME_MULTIMEDIA = {
+    "libBulletDynamics.dll": "Bullet Physics — физический движок: обнаружение столкновений, динамика твёрдых/мягких тел, ray casting.",
+    "libBulletDynamics.so.3.25": "Bullet Physics — физический движок (Linux)",
+    "libBulletCollision.dll": "Bullet Collision — модуль обнаружения столкновений физического движка Bullet.",
+    "libgodot-cpp.dll": "Godot Engine — нативные расширения Godot, написанные на C++ (встраиваемый скриптинг).",
+    "libgodot-cpp.so": "Godot Engine — нативные расширения (Linux)",
+    "libOgreMain.dll": "OGRE 3D — объектно-ориентированный движок рендеринга (используется в играх, симуляторах, VR).",
+    "libOgreMain.so.1.12": "OGRE 3D — движок рендеринга (Linux)",
+    "libIrrlicht.dll": "Irrlicht — простой и быстрый 3D-движок реального времени (Direct3D, OpenGL, программный рендеринг).",
+    "libIrrlicht.so.1.8": "Irrlicht — 3D-движок (Linux)",
+    "libosg.dll": "OpenSceneGraph — высокопроизводительный 3D-графический движок (OpenGL, используется в симуляторах и ГИС).",
+    "libosg.so.161": "OpenSceneGraph — 3D-графика (Linux)",
+    "libavcodec.dll": "FFmpeg libavcodec — кодирование/декодирование аудио/видео (сотни кодеков: H.264, H.265, VP9, AV1, AAC, MP3, Opus).",
+    "libavcodec.so.60": "FFmpeg libavcodec — аудио/видео кодеки (Linux)",
+    "libavformat.dll": "FFmpeg libavformat — демультиплексирование/мультиплексирование аудио/видео контейнеров (MP4, MKV, AVI, WebM, MOV, TS).",
+    "libavformat.so.60": "FFmpeg libavformat — мультиплексирование (Linux)",
+    "libavutil.dll": "FFmpeg libavutil — вспомогательные функции: математика, строки, криптографические хеши, управление памятью.",
+    "libavutil.so.58": "FFmpeg libavutil — утилиты (Linux)",
+    "libswscale.dll": "FFmpeg libswscale — масштабирование, конвертация цветовых пространств и форматов пикселей изображений.",
+    "libswscale.so.7": "FFmpeg libswscale — масштабирование (Linux)",
+    "libswresample.dll": "FFmpeg libswresample — ресемплинг, конвертация формата сэмплов и микширование аудио.",
+    "libswresample.so.4": "FFmpeg libswresample — ресемплинг аудио (Linux)",
+    "libvlc.dll": "LibVLC — медиа-движок VLC (воспроизведение, стриминг, транскодирование практически всех аудио/видео форматов).",
+    "libvlc.so.5": "LibVLC — медиа-движок (Linux)",
+    "libvlccore.dll": "LibVLC Core — ядро медиа-движка VLC (управление модулями, потоками, синхронизацией).",
+    "libvlccore.so.9": "LibVLC Core — ядро медиа-движка (Linux)",
+    "libgstreamer-1.0-0.dll": "GStreamer — мультимедийный фреймворк (обработка аудио/видео цепочками элементов: источники, кодеки, фильтры, приёмники).",
+    "libgstreamer-1.0.so.0": "GStreamer — мультимедиа фреймворк (Linux)",
+    "libtag.dll": "TagLib — чтение/запись метаданных аудиофайлов (ID3v1, ID3v2, APE, Vorbis Comments, MP4, ASF).",
+    "libtag.so.1": "TagLib — метаданные аудио (Linux)",
+    "libcdio.dll": "libcdio — работа с CD-ROM/CD-RW/DVD устройствами: чтение/запись треков, анализ файловых систем CD (ISO 9660).",
+    "libcdio.so.19": "libcdio — работа с CD/DVD (Linux)",
+}
+
+_THIRD_PARTY_2D_GRAPHICS = {
+    "cairo.dll": "Cairo — библиотека векторной 2D-графики с аппаратным ускорением. Отрисовка одинакового качества на экране и при печати (PDF, SVG, PS).",
+    "libcairo.so.2": "Cairo — векторная графика (Linux)",
+    "libcairo.dylib": "Cairo — векторная графика (macOS)",
+    "libpixman-1-0.dll": "Pixman — низкоуровневая библиотека пиксельной графики (композитинг, альфа-смешение, используется Cairo и X server).",
+    "libpixman-1.so.0": "Pixman — пиксельная графика (Linux)",
+    "librsvg-2-2.dll": "librsvg — рендеринг SVG (Scalable Vector Graphics). Используется для отображения векторных иконок, иллюстраций.",
+    "librsvg-2.so.2": "librsvg — рендеринг SVG (Linux)",
+    "libSkia.dll": "Skia — библиотека 2D-графики (используется в Chrome, Android, Flutter, Firefox). Аппаратно-ускоренный рендеринг текста, фигур, изображений.",
+    "libskia.so": "Skia — 2D-графика (Linux)",
+    "libqrencode.dll": "libqrencode — генерация QR-кодов (Quick Response codes) в виде PNG, SVG, текста.",
+    "libqrencode.so.4": "libqrencode — QR-коды (Linux)",
+    "libzxing.dll": "ZXing — Zebra Crossing. Декодирование штрихкодов (QR, Data Matrix, EAN, UPC, Code128).",
+    "libzxing.so": "ZXing — штрихкоды (Linux)",
+}
+
+_THIRD_PARTY_GUI_MORE = {
+    "libwx_mswu_core-3.2.dll": "wxWidgets — кроссплатформенный GUI-фреймворк (нативные элементы управления через Win32 API, GTK, Cocoa).",
+    "libwx_gtk3u_core-3.2.so.0": "wxWidgets — GUI-фреймворк (Linux GTK3)",
+    "libfltk.dll": "FLTK — Fast Light Toolkit. Лёгкий GUI-фреймворк (игры, встраиваемые системы, САПР).",
+    "libfltk.so.1.3": "FLTK — GUI-фреймворк (Linux)",
+    "libnuklear.dll": "Nuklear — немедленный режим GUI (immediate mode), полностью в одном заголовочном файле.",
+    "libnuklear.so": "Nuklear — GUI immediate mode (Linux)",
+    "libimgui.dll": "Dear ImGui — немедленный режим GUI, популярный в инструментах разработки игр, профилировщиках, отладчиках.",
+    "libimgui.so": "Dear ImGui — GUI для dev-инструментов (Linux)",
+    "libIUP.dll": "IUP — кроссплатформенный GUI-фреймворк, использующий нативные элементы управления (Win32 API, Motif, GTK).",
+    "libiup.so": "IUP — GUI (Linux)",
+    "libnana.dll": "Nana C++ Library — кроссплатформенный GUI-фреймворк с современным C++11 API.",
+    "libnana.so": "Nana C++ — GUI (Linux)",
+}
+
+_THIRD_PARTY_TERMINAL = {
+    "libncursesw6.dll": "Ncurses — библиотека для создания текстовых пользовательских интерфейсов (TUI) в терминале: окна, меню, формы, работа с цветом.",
+    "libncursesw.so.6": "Ncurses — TUI (Linux)",
+    "libncurses.dylib": "Ncurses — TUI (macOS)",
+    "libpanelw6.dll": "Panel — надстройка над ncurses для работы с панелями (перекрывающиеся окна, z-order).",
+    "libpanelw.so.6": "Panel — панели для ncurses (Linux)",
+    "libformw6.dll": "Form — надстройка над ncurses для создания форм ввода данных.",
+    "libformw.so.6": "Form — формы ввода (Linux)",
+    "libmenuw6.dll": "Menu — надстройка над ncurses для создания меню.",
+    "libmenuw.so.6": "Menu — меню (Linux)",
+    "libreadline8.dll": "GNU Readline — редактирование командной строки с историей, автодополнением и Emacs/vi-режимами.",
+    "libreadline.so.8": "GNU Readline — командная строка (Linux)",
+}
+
+_THIRD_PARTY_COMPRESSION_MORE = {
+    "liblz4.dll": "LZ4 — сверхбыстрое сжатие/распаковка (скорость > 500 МБ/с, используется в реальном времени, СУБД, ядре Linux).",
+    "liblz4.so.1": "LZ4 — сверхбыстрое сжатие (Linux)",
+    "libzstd.dll": "Zstandard (zstd) — современное сжатие от Facebook: высокая степень + высокая скорость (превосходит zlib).",
+    "libzstd.so.1": "Zstandard — сжатие (Linux)",
+    "libbrotlicommon.dll": "Brotli — сжатие общего назначения от Google (используется в HTTP Content-Encoding, веб-шрифтах WOFF2).",
+    "libbrotlicommon.so.1": "Brotli — сжатие (Linux)",
+    "libbrotlienc.dll": "Brotli Encoder — кодирование данных алгоритмом Brotli.",
+    "libbrotlidec.dll": "Brotli Decoder — декодирование Brotli-сжатых данных.",
+    "libsnappy.dll": "Snappy — быстрое сжатие от Google (средняя степень, очень высокая скорость). Используется в LevelDB, BigTable, Cassandra.",
+    "libsnappy.so.1": "Snappy — быстрое сжатие (Linux)",
+    "libzopfli.dll": "Zopfli — медленное, но максимально эффективное сжатие DEFLATE/zlib/gzip. Уменьшает размер на 3-8%.",
+    "libzopfli.so.1": "Zopfli — высокоэффективное сжатие (Linux)",
+    "libminizip.dll": "Minizip — работа с ZIP-архивами на основе zlib (создание, чтение, добавление файлов).",
+    "libminizip.so.1": "Minizip — ZIP (Linux)",
+    "libunrar.dll": "UnRAR — распаковка RAR-архивов (проприетарный формат сжатия, широко используемый в интернете).",
+    "libunrar.so.5": "UnRAR — распаковка RAR (Linux)",
+    "libarchive.dll": "libarchive — чтение/запись архивов: tar, pax, cpio, zip, xar, lha, ar, cab, 7-Zip, Warc, ISO 9660.",
+    "libarchive.so.13": "libarchive — работа с архивами (Linux)",
+}
+
+
+_THIRD_PARTY_CRYPTO_MORE = {
+    "libsodium.dll": "Libsodium — современная, простая криптографическая библиотека (шифрование, хеши, подписи, обмен ключами).",
+    "libsodium.so.23": "Libsodium — криптография (Linux)",
+    "libsodium.dylib": "Libsodium — криптография (macOS)",
+    "libcryptopp.dll": "Crypto++ — обширная C++ библиотека криптографических алгоритмов (RSA, AES, ECC, SHA-3, ChaCha20-Poly1305).",
+    "libcryptopp.so.8": "Crypto++ — криптография (Linux)",
+    "libmbedtls.dll": "Mbed TLS — компактная реализация TLS и криптографии для встраиваемых систем (SSL/TLS, X.509, шифры).",
+    "libmbedtls.so.14": "Mbed TLS — TLS/криптография (Linux)",
+    "libmbedcrypto.dll": "Mbed Crypto — криптографический модуль Mbed TLS (шифры, хеши, ECC, RSA).",
+    "libmbedcrypto.so.7": "Mbed Crypto — криптография (Linux)",
+    "libmbedx509.dll": "Mbed X.509 — работа с сертификатами X.509 в экосистеме Mbed TLS.",
+    "libwolfssl.dll": "wolfSSL — лёгкая реализация TLS/SSL (сертифицирована FIPS), оптимизирована для встраиваемых систем.",
+    "libwolfssl.so.35": "wolfSSL — TLS (Linux)",
+    "libgpg-error.dll": "Libgpg-error — общие коды ошибок для GnuPG и связанных библиотек (GPGME, libgcrypt, libksba).",
+    "libgpg-error.so.0": "Libgpg-error — коды ошибок (Linux)",
+    "libgpgme-11.dll": "GPGME — GnuPG Made Easy. Высокоуровневый API для шифрования, подписи, управления ключами PGP.",
+    "libgpgme.so.11": "GPGME — GPG API (Linux)",
+    "libtasn1.dll": "Libtasn1 — библиотека ASN.1 (Abstract Syntax Notation One). Кодирование/декодирование структур данных.",
+    "libtasn1.so.6": "Libtasn1 — ASN.1 (Linux)",
+}
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ОБЪЕДИНЕНИЕ ВСЕХ БАЗ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Единая база: имя_модуля → описание
+_ALL_MODULES = {}
+_ALL_MODULES.update(_WINDOWS_HAL)
+_ALL_MODULES.update(_WINDOWS_NATIVE_API)
+_ALL_MODULES.update(_WINDOWS_KERNEL_SUBSYSTEM)
+_ALL_MODULES.update(_WINDOWS_USER_SUBSYSTEM)
+_ALL_MODULES.update(_WINDOWS_SECURITY_CRYPTO)
+_ALL_MODULES.update(_WINDOWS_NETWORK)
+_ALL_MODULES.update(_WINDOWS_GRAPHICS_MULTIMEDIA)
+_ALL_MODULES.update(_WINDOWS_RUNTIME)
+_ALL_MODULES.update(_WINDOWS_SYSTEM_SERVICES)
+_ALL_MODULES.update(_WINDOWS_USB_DEVICE)
+_ALL_MODULES.update(_WINDOWS_DOTNET)
+_ALL_MODULES.update(_WINDOWS_SUBSYSTEM_COMPAT)
+_ALL_MODULES.update(_WINDOWS_API_SETS)
+
+_ALL_MODULES.update(_LINUX_CORE_LIBS)
+_ALL_MODULES.update(_LINUX_DYNAMIC_LINKER)
+_ALL_MODULES.update(_LINUX_SYSTEM_SERVICES)
+_ALL_MODULES.update(_LINUX_SECURITY)
+_ALL_MODULES.update(_LINUX_COMPILER_RUNTIME)
+_ALL_MODULES.update(_LINUX_COMPRESSION)
+_ALL_MODULES.update(_LINUX_XML_PARSING)
+_ALL_MODULES.update(_LINUX_DATABASE)
+
+_ALL_MODULES.update(_ANDROID_CORE)
+_ALL_MODULES.update(_ANDROID_BINDER)
+_ALL_MODULES.update(_ANDROID_HARDWARE)
+_ALL_MODULES.update(_ANDROID_NATIVE_WINDOW)
+_ALL_MODULES.update(_ANDROID_MEDIA)
+_ALL_MODULES.update(_ANDROID_GRAPHICS)
+_ALL_MODULES.update(_ANDROID_NETWORK)
+_ALL_MODULES.update(_ANDROID_BLUETOOTH)
+_ALL_MODULES.update(_ANDROID_RUNTIME)
+_ALL_MODULES.update(_ANDROID_NETWORK_MONITORING)
+_ALL_MODULES.update(_ANDROID_CRYPTO)
+
+_ALL_MODULES.update(_MACOS_CORE)
+_ALL_MODULES.update(_MACOS_DISPATCH)
+_ALL_MODULES.update(_MACOS_FOUNDATION)
+_ALL_MODULES.update(_MACOS_NETWORK)
+_ALL_MODULES.update(_MACOS_DATABASE)
+_ALL_MODULES.update(_MACOS_SWIFT)
+_ALL_MODULES.update(_MACOS_CRYPTO)
+
+_ALL_MODULES.update(_THIRD_PARTY_BROWSER)
+_ALL_MODULES.update(_THIRD_PARTY_CRYPTO)
+_ALL_MODULES.update(_THIRD_PARTY_COMPRESSION)
+_ALL_MODULES.update(_THIRD_PARTY_DATABASE)
+_ALL_MODULES.update(_THIRD_PARTY_NETWORK)
+_ALL_MODULES.update(_THIRD_PARTY_GRAPHICS)
+_ALL_MODULES.update(_THIRD_PARTY_LOGGING)
+_ALL_MODULES.update(_THIRD_PARTY_XML)
+_ALL_MODULES.update(_THIRD_PARTY_VIRTUALIZATION)
+_ALL_MODULES.update(_THIRD_PARTY_VPN)
+_ALL_MODULES.update(_THIRD_PARTY_QT)
+_ALL_MODULES.update(_THIRD_PARTY_ML)
+_ALL_MODULES.update(_THIRD_PARTY_RPC)
+_ALL_MODULES.update(_THIRD_PARTY_JAVASCRIPT)
+
+_ALL_MODULES.update(_WINDOWS_SERVER_CORE)
+_ALL_MODULES.update(_WINDOWS_OPENSSL_MODERN)
+_ALL_MODULES.update(_WINDOWS_BCRYPTPRIMITIVES)
+
+_ALL_MODULES.update(_LINUX_SYSTEMD_LIBS)
+_ALL_MODULES.update(_LINUX_SECURITY_EXTRA)
+_ALL_MODULES.update(_LINUX_CRYPTO_EXTRA)
+
+_ALL_MODULES.update(_MACOS_EXPAT)
+_ALL_MODULES.update(_MACOS_FONTCONFIG)
+_ALL_MODULES.update(_MACOS_BORINGSSL)
+
+_ALL_MODULES.update(_ANDROID_NDK)
+_ALL_MODULES.update(_ANDROID_ICU)
+_ALL_MODULES.update(_ANDROID_CAMERA)
+_ALL_MODULES.update(_ANDROID_MEDIA_NDK)
+_ALL_MODULES.update(_ANDROID_AUDIO)
+_ALL_MODULES.update(_ANDROID_JNI)
+_ALL_MODULES.update(_ANDROID_EXPAT)
+
+_ALL_MODULES.update(_THIRD_PARTY_IMAGE)
+_ALL_MODULES.update(_THIRD_PARTY_AUDIO)
+_ALL_MODULES.update(_THIRD_PARTY_CV)
+_ALL_MODULES.update(_THIRD_PARTY_ML_MORE)
+_ALL_MODULES.update(_THIRD_PARTY_RPC_MORE)
+_ALL_MODULES.update(_THIRD_PARTY_GAME_MULTIMEDIA)
+_ALL_MODULES.update(_THIRD_PARTY_2D_GRAPHICS)
+_ALL_MODULES.update(_THIRD_PARTY_GUI_MORE)
+_ALL_MODULES.update(_THIRD_PARTY_TERMINAL)
+_ALL_MODULES.update(_THIRD_PARTY_COMPRESSION_MORE)
+_ALL_MODULES.update(_THIRD_PARTY_CRYPTO_MORE)
+
+
+
+# ------------------------------------------------------------
+# НОРМАЛИЗАЦИЯ И КЛАССИФИКАЦИЯ
+# ------------------------------------------------------------
+
+def _normalize_name(name: str) -> str:
+    """Убирает расширение и приводит к нижнему регистру."""
+    for ext in ('.dll', '.so', '.dylib', '.drv', '.sys', '.exe'):
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+            break
+    return name.lower()
+
+# Объединяем все словари в один нормализованный
+_ALL_MODULES = {}
+# Собираем все ваши словари (перечислите их все, как делали раньше)
+for d in [
+    _WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM, _WINDOWS_USER_SUBSYSTEM,
+    _WINDOWS_SECURITY_CRYPTO, _WINDOWS_NETWORK, _WINDOWS_GRAPHICS_MULTIMEDIA,
+    _WINDOWS_RUNTIME, _WINDOWS_SYSTEM_SERVICES, _WINDOWS_USB_DEVICE, _WINDOWS_DOTNET,
+    _WINDOWS_SUBSYSTEM_COMPAT, _WINDOWS_API_SETS, _WINDOWS_SERVER_CORE,
+    _WINDOWS_OPENSSL_MODERN, _WINDOWS_BCRYPTPRIMITIVES,
+    _LINUX_CORE_LIBS, _LINUX_DYNAMIC_LINKER, _LINUX_SYSTEM_SERVICES,
+    _LINUX_SECURITY, _LINUX_COMPILER_RUNTIME, _LINUX_COMPRESSION,
+    _LINUX_XML_PARSING, _LINUX_DATABASE, _LINUX_SYSTEMD_LIBS,
+    _LINUX_SECURITY_EXTRA, _LINUX_CRYPTO_EXTRA,
+    _ANDROID_CORE, _ANDROID_BINDER, _ANDROID_HARDWARE, _ANDROID_NATIVE_WINDOW,
+    _ANDROID_MEDIA, _ANDROID_GRAPHICS, _ANDROID_NETWORK, _ANDROID_BLUETOOTH,
+    _ANDROID_RUNTIME, _ANDROID_NETWORK_MONITORING, _ANDROID_CRYPTO,
+    _ANDROID_NDK, _ANDROID_ICU, _ANDROID_CAMERA, _ANDROID_MEDIA_NDK,
+    _ANDROID_AUDIO, _ANDROID_JNI, _ANDROID_EXPAT,
+    _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION, _MACOS_NETWORK,
+    _MACOS_DATABASE, _MACOS_SWIFT, _MACOS_CRYPTO, _MACOS_EXPAT,
+    _MACOS_FONTCONFIG, _MACOS_BORINGSSL,
+    _THIRD_PARTY_BROWSER, _THIRD_PARTY_CRYPTO, _THIRD_PARTY_COMPRESSION,
+    _THIRD_PARTY_DATABASE, _THIRD_PARTY_NETWORK, _THIRD_PARTY_GRAPHICS,
+    _THIRD_PARTY_LOGGING, _THIRD_PARTY_XML, _THIRD_PARTY_VIRTUALIZATION,
+    _THIRD_PARTY_VPN, _THIRD_PARTY_QT, _THIRD_PARTY_ML, _THIRD_PARTY_RPC,
+    _THIRD_PARTY_JAVASCRIPT, _THIRD_PARTY_IMAGE, _THIRD_PARTY_AUDIO,
+    _THIRD_PARTY_CV, _THIRD_PARTY_ML_MORE, _THIRD_PARTY_RPC_MORE,
+    _THIRD_PARTY_GAME_MULTIMEDIA, _THIRD_PARTY_2D_GRAPHICS, _THIRD_PARTY_GUI_MORE,
+    _THIRD_PARTY_TERMINAL, _THIRD_PARTY_COMPRESSION_MORE, _THIRD_PARTY_CRYPTO_MORE
+]:
+    _ALL_MODULES.update(d)
+
+# Строим нормализованную базу
+_NORMALIZED_ALL_MODULES = {}
+for original_name, description in _ALL_MODULES.items():
+    norm_key = _normalize_name(original_name)
+    if norm_key not in _NORMALIZED_ALL_MODULES:
+        _NORMALIZED_ALL_MODULES[norm_key] = description
+
+# Вспомогательная функция
+def _normalize_dict(d):
+    return {_normalize_name(k): v for k, v in d.items()}
+
+# Группы словарей для категорий (используются после объявления _normalize_name)
+_SYSTEM_DICTS = [
+    _WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM,
+    _WINDOWS_USER_SUBSYSTEM, _WINDOWS_SYSTEM_SERVICES,
+    _WINDOWS_USB_DEVICE, _WINDOWS_SUBSYSTEM_COMPAT,
+    _WINDOWS_API_SETS, _WINDOWS_DOTNET,
+    _LINUX_CORE_LIBS, _LINUX_DYNAMIC_LINKER, _LINUX_SYSTEM_SERVICES,
+    _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION,
+    _ANDROID_CORE, _ANDROID_BINDER, _ANDROID_RUNTIME,
+    _ANDROID_NETWORK_MONITORING,
+]
+
+_SECURITY_DICTS = [
+    _WINDOWS_SECURITY_CRYPTO, _WINDOWS_BCRYPTPRIMITIVES,
+    _LINUX_SECURITY, _MACOS_CRYPTO, _ANDROID_CRYPTO,
+    _THIRD_PARTY_CRYPTO, _THIRD_PARTY_CRYPTO_MORE,
+    _LINUX_SECURITY_EXTRA, _LINUX_CRYPTO_EXTRA,
+]
+
+_NETWORK_DICTS = [
+    _WINDOWS_NETWORK, _MACOS_NETWORK,
+    _ANDROID_NETWORK, _ANDROID_BLUETOOTH,
+    _THIRD_PARTY_NETWORK, _THIRD_PARTY_BROWSER,
+    _THIRD_PARTY_VPN, _THIRD_PARTY_RPC, _THIRD_PARTY_RPC_MORE,
+    _THIRD_PARTY_JAVASCRIPT,
+]
+
+_GRAPHICS_MULTIMEDIA_DICTS = [
+    _WINDOWS_GRAPHICS_MULTIMEDIA, _THIRD_PARTY_GRAPHICS,
+    _THIRD_PARTY_IMAGE, _THIRD_PARTY_AUDIO,
+    _THIRD_PARTY_CV, _THIRD_PARTY_GAME_MULTIMEDIA,
+    _THIRD_PARTY_2D_GRAPHICS, _THIRD_PARTY_GUI_MORE,
+    _THIRD_PARTY_TERMINAL,
+    _ANDROID_NATIVE_WINDOW, _ANDROID_MEDIA, _ANDROID_GRAPHICS,
+    _ANDROID_CAMERA, _ANDROID_MEDIA_NDK, _ANDROID_AUDIO,
+]
+
+_RUNTIME_DICTS = [
+    _WINDOWS_RUNTIME, _LINUX_COMPILER_RUNTIME,
+    _MACOS_SWIFT, _THIRD_PARTY_ML, _THIRD_PARTY_ML_MORE,
+    _ANDROID_NDK, _ANDROID_ICU,
+]
+
+_STANDALONE_DICTS = [
+    _WINDOWS_SERVER_CORE, _WINDOWS_OPENSSL_MODERN,
+    _LINUX_SYSTEMD_LIBS, _LINUX_SECURITY_EXTRA, _LINUX_CRYPTO_EXTRA,
+    _MACOS_EXPAT, _MACOS_FONTCONFIG, _MACOS_BORINGSSL,
+    _THIRD_PARTY_COMPRESSION, _THIRD_PARTY_DATABASE, _THIRD_PARTY_LOGGING,
+    _THIRD_PARTY_XML, _THIRD_PARTY_VIRTUALIZATION, _THIRD_PARTY_QT,
+    _THIRD_PARTY_IMAGE, _THIRD_PARTY_AUDIO, _THIRD_PARTY_CV,
+    _THIRD_PARTY_ML_MORE, _THIRD_PARTY_RPC_MORE,
+    _THIRD_PARTY_GAME_MULTIMEDIA, _THIRD_PARTY_2D_GRAPHICS,
+    _THIRD_PARTY_GUI_MORE, _THIRD_PARTY_TERMINAL,
+    _THIRD_PARTY_COMPRESSION_MORE, _THIRD_PARTY_CRYPTO_MORE,
+]
+
+# ------------------------------------------------------------
+# ПУБЛИЧНЫЕ ФУНКЦИИ
+# ------------------------------------------------------------
+
+def classify_module(module_name: str) -> str:
+    """
+    Возвращает описание модуля на основе базы знаний.
+    Если модуль не найден, возвращает общую строку с типом файла.
+    """
+    norm = _normalize_name(module_name)
+    if norm in _NORMALIZED_ALL_MODULES:
+        return _NORMALIZED_ALL_MODULES[norm]
+    # Эвристики
+    if norm.startswith("api-ms-win-") or norm.startswith("ext-ms-win-"):
+        return "Windows API Set"
+    if module_name.lower().endswith(".dll"):
+        return "Неопознанная Windows DLL"
+    if "lib" in norm and ".so" in module_name:
+        return "Неопознанная Linux shared library"
+    if module_name.lower().endswith(".dylib"):
+        return "Неопознанная macOS / iOS dynamic library"
+    return "Неопознанный модуль"
+
+
+def classify_category(module_name: str) -> tuple:
+    """
+    Возвращает кортеж (категория, описание).
+    Категории: "Системные библиотеки", "Криптография и безопасность",
+               "Сетевые компоненты", "Графика и мультимедиа",
+               "Библиотеки времени выполнения", "Сторонние библиотеки",
+               "Без категории".
+    """
+    norm = _normalize_name(module_name)
+    # Сначала точное совпадение в базе
+    if norm in _NORMALIZED_ALL_MODULES:
+        desc = _NORMALIZED_ALL_MODULES[norm]
+        # Определяем категорию
+        if _in_any_dict(norm, _SYSTEM_DICTS):
+            return "Системные библиотеки", desc
+        if _in_any_dict(norm, _SECURITY_DICTS):
+            return "Криптография и безопасность", desc
+        if _in_any_dict(norm, _NETWORK_DICTS):
+            return "Сетевые компоненты", desc
+        if _in_any_dict(norm, _GRAPHICS_MULTIMEDIA_DICTS):
+            return "Графика и мультимедиа", desc
+        if _in_any_dict(norm, _RUNTIME_DICTS):
+            return "Библиотеки времени выполнения", desc
+        # Остальные известные – сторонние
+        return "Сторонние библиотеки", desc
+
+    # Эвристики для неизвестных
+    if norm.startswith("api-ms-win-") or norm.startswith("ext-ms-win-"):
+        return "Системные библиотеки", "Windows API Set"
+    if module_name.lower().endswith(".dll"):
+        return "Без категории", "Неопознанная Windows DLL"
+    if "lib" in norm and ".so" in module_name:
+        return "Без категории", "Неопознанная Linux shared library"
+    if module_name.lower().endswith(".dylib"):
+        return "Без категории", "Неопознанная macOS / iOS dynamic library"
+    return "Без категории", "Неопознанный модуль"
+
+
+def _in_any_dict(norm_key, dicts):
+    """Проверяет, содержится ли нормализованный ключ в одном из словарей."""
+    for d in dicts:
+        if norm_key in _normalize_dict(d):
+            return True
+    return False

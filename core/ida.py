@@ -38,8 +38,11 @@ class IDAAnalyzer:
         return output_dir / (file_path.name + ext)
 
     def analyze_file(self, file_path: Path, output_dir: Optional[Path] = None,
-                     script_path: Optional[Path] = None, cleanup_temp: bool = True,
-                     temp_cleanup: bool = True, keep_log_on_error: bool = True) -> bool:
+                     script_path: Optional[Path] = None, keep_log_on_error: bool = True) -> bool:
+        """
+        Анализирует один файл. Больше не удаляет временные файлы –
+        очистка будет выполнена позже в analyze_batch.
+        """
         if not file_path.exists():
             logger.error(f"File not found: {file_path}")
             return False
@@ -65,7 +68,7 @@ class IDAAnalyzer:
             process.wait()
             returncode = process.returncode
 
-            temp_id0 = str(file_path) + ".id0"
+            temp_id0 = str(file_path) + ".id0"   # проверка краша IDA
             if os.path.isfile(temp_id0):
                 logger.error(f"IDA crashed on {file_path.name}: .id0 still present")
                 if keep_log_on_error and log_path.exists():
@@ -86,17 +89,14 @@ class IDAAnalyzer:
             logger.exception(f"Error running IDA for {file_path.name}: {e}")
             return False
 
-        if success:
-            if cleanup_temp:
-                self._clean_single(log_path, idb_path)
-            if temp_cleanup:
-                self._clean_temp_id0(out_dir)
-
         return success
 
     def analyze_batch(self, files: List[Path], output_dir: Optional[Path] = None,
                       script_path: Optional[Path] = None,
                       cleanup_temp: bool = True, temp_cleanup: bool = True) -> dict:
+        """
+        Пакетный анализ с отложенной очисткой временных файлов.
+        """
         total = len(files)
         results = {}
         completed = 0
@@ -104,8 +104,7 @@ class IDAAnalyzer:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_file = {
                 executor.submit(
-                    self.analyze_file, f, output_dir, script_path,
-                    cleanup_temp, temp_cleanup
+                    self.analyze_file, f, output_dir, script_path
                 ): f
                 for f in files
             }
@@ -121,6 +120,24 @@ class IDAAnalyzer:
                 if self._progress_callback:
                     self._progress_callback(f.name, completed, total)
 
+        # Удаляем временные файлы только после полного завершения всех анализов
+        if cleanup_temp or temp_cleanup:
+            logger.info("Starting delayed cleanup of temporary files...")
+            for f, success in results.items():
+                if not success:
+                    continue
+                out_dir = output_dir or f.parent
+                idb_path = self._unique_idb_path(f, out_dir)
+                log_path = out_dir / (f.name + ".log")
+                if cleanup_temp:
+                    self._safe_clean_file(log_path, "log")
+                    asm_path = idb_path.with_suffix('.asm')
+                    self._safe_clean_file(asm_path, "asm")
+                if temp_cleanup:
+                    for pattern in ["*.id0", "*.id1", "*.nam", "*.til"]:
+                        for temp_file in out_dir.glob(pattern):
+                            self._safe_clean_file(temp_file, pattern[1:])
+
         return results
 
     # ------------------------------------------------------------------
@@ -128,10 +145,6 @@ class IDAAnalyzer:
     # ------------------------------------------------------------------
     def run_script_on_idb(self, idb_path: Path, script_path: Path,
                           output_dir: Optional[Path] = None) -> bool:
-        """
-        Запускает IDAPython-скрипт на существующей базе.
-        Возвращает True при успешном завершении IDA (exit code 0).
-        """
         if not idb_path.exists():
             logger.error(f"Database not found: {idb_path}")
             return False
@@ -144,7 +157,7 @@ class IDAAnalyzer:
 
         cmd = [
             self.idat,
-            "-A",                        # без автоанализа
+            "-A",
             f"-S{script_path}",
             f"-L{log_path}",
             str(idb_path)
@@ -168,10 +181,6 @@ class IDAAnalyzer:
 
     def run_script_on_batch(self, idb_files: List[Path], script_path: Path,
                             output_dir: Optional[Path] = None) -> dict:
-        """
-        Пакетный запуск скрипта на списке баз данных.
-        Возвращает {Path: bool} – успех/провал.
-        """
         total = len(idb_files)
         results = {}
         completed = 0
@@ -198,6 +207,25 @@ class IDAAnalyzer:
     # ------------------------------------------------------------------
     # Вспомогательные методы
     # ------------------------------------------------------------------
+    def _safe_clean_file(self, file_path: Path, description: str = "", retries: int = 3, delay: float = 1.0):
+        """Пытается удалить файл несколько раз с задержкой."""
+        if not file_path.exists():
+            return
+        for attempt in range(1, retries + 1):
+            try:
+                file_path.unlink()
+                logger.info(f"Removed {description}: {file_path.name}")
+                return
+            except PermissionError as e:
+                if attempt < retries:
+                    logger.warning(f"Could not remove {file_path.name} (attempt {attempt}): {e}. Retrying...")
+                    time.sleep(delay)
+                else:
+                    logger.warning(f"Could not remove {file_path.name} after {retries} attempts: {e}")
+            except Exception as e:
+                logger.warning(f"Could not remove {file_path.name}: {e}")
+                break
+
     def _detect_arch(self, file_path: Path) -> int:
         try:
             with open(file_path, 'rb') as f:
@@ -227,19 +255,3 @@ class IDAAnalyzer:
                 logger.error("Last lines from IDA log:\n" + "".join(log_lines[-lines:]))
         except Exception as e:
             logger.warning(f"Could not read log: {e}")
-
-    def _clean_single(self, log_path: Path, idb_path: Path):
-        try:
-            if log_path.exists(): log_path.unlink()
-            asm_path = idb_path.with_suffix('.asm')
-            if asm_path.exists(): asm_path.unlink()
-        except Exception:
-            pass
-
-    def _clean_temp_id0(self, output_dir: Path):
-        for pattern in ["*.id0", "*.id1", "*.nam", "*.til"]:
-            for temp_file in output_dir.glob(pattern):
-                try:
-                    temp_file.unlink()
-                except Exception:
-                    pass

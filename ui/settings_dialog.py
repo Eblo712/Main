@@ -84,20 +84,22 @@ class SettingsPage(QWidget):
         self.idat64_edit.setText(ida.get("idat64", "idat64.exe"))
         self.idat32_edit.setText(ida.get("idat32", "idat32.exe"))
         theme = self.cfg.get("theme", "light")
-        if theme == "light":
-            self.theme_light_btn.setChecked(True)
-            self.theme_dark_btn.setChecked(False)
-        else:
-            self.theme_light_btn.setChecked(False)
-            self.theme_dark_btn.setChecked(True)
+        self.theme_light_btn.setChecked(theme == "light")
+        self.theme_dark_btn.setChecked(theme == "dark")
 
     def _switch_theme(self, theme):
+        # Применяем тему мгновенно
         new_cfg = {**self.cfg, "theme": theme}
         save_config(new_cfg)
         self.cfg = new_cfg
+        # Обновляем состояние кнопок
+        self.theme_light_btn.setChecked(theme == "light")
+        self.theme_dark_btn.setChecked(theme == "dark")
+        # Оповещаем главное окно
         self.config_changed.emit(new_cfg)
 
     def _save_settings(self):
+        # Сохраняем только пути IDA, тема уже сохранена при переключении
         new_cfg = {
             "ida": {
                 "idat64": self.idat64_edit.text().strip(),
@@ -105,12 +107,13 @@ class SettingsPage(QWidget):
             },
             "max_ida": self.cfg.get("max_ida", 4),
             "default_inputdir": self.cfg.get("default_inputdir", "."),
-            "theme": "light" if self.theme_light_btn.isChecked() else "dark",
+            "theme": self.cfg.get("theme", "light"),   # сохраняем текущую тему без изменений
         }
         try:
             save_config(new_cfg)
             self.cfg = new_cfg
-            self.config_changed.emit(new_cfg)
+            # Не эмитим сигнал смены темы, чтобы не сбросить уже применённую тему
+            # (пути IDA не влияют на тему, поэтому можно не оповещать)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
 

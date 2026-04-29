@@ -8,7 +8,7 @@ import logging
 class AnalysisWorker(QThread):
     progress_updated = Signal(str, int, int)
     analysis_finished = Signal(int, int)
-    error_occurred = Signal(str)
+    error_occurred = Signal(str)                  # будет принимать все сообщения (и INFO)
 
     def __init__(self, files: List[Path], idat_path: str, max_workers: int,
                  output_dir: Path = None, cleanup: bool = True, temp_cleanup: bool = True,
@@ -39,7 +39,8 @@ class AnalysisWorker(QThread):
                 self.signal.emit(msg)
 
         handler = SignalHandler(self.error_occurred)
-        handler.setLevel(logging.WARNING)         # перехватываем WARNING и выше, чтобы не пропустить важное
+        # Перехватываем всё начиная с INFO, чтобы видеть сообщения об удалении
+        handler.setLevel(logging.INFO)
         handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
         if self.verbose:
             root_logger.setLevel(logging.DEBUG)

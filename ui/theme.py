@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QApplication
 LIGHT_THEME = """
 * {
     font-family: "Segoe UI", "San Francisco", "Helvetica Neue", sans-serif;
-    font-size: 14px;
+    font-size: 12px;
 }
 QMainWindow {
     background-color: #f5f5f5;
@@ -29,10 +29,7 @@ QGroupBox::title {
     padding: 0 8px 0 8px;
     color: #303030;
     font-weight: 600;
-    font-size: 15px;
-}
-QGroupBox * {
-    color: #303030;
+    font-size: 13px;
 }
 QPushButton {
     background-color: #007aff;
@@ -40,7 +37,7 @@ QPushButton {
     border-radius: 10px;
     padding: 10px 24px;
     font-weight: 500;
-    font-size: 14px;
+    font-size: 12px;
     border: none;
 }
 QPushButton:hover {
@@ -57,14 +54,14 @@ QLineEdit, QSpinBox, QComboBox {
     border: 1px solid #c6c6c8;
     border-radius: 8px;
     padding: 8px;
-    font-size: 14px;
+    font-size: 12px;
 }
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
     border: 1.5px solid #007aff;
     outline: none;
 }
 QComboBox QAbstractItemView {
-    font-size: 14px;
+    font-size: 12px;
     font-family: "Segoe UI", "San Francisco", "Helvetica Neue", sans-serif;
     background-color: #ffffff;
     border: 1px solid #c6c6c8;
@@ -77,7 +74,7 @@ QProgressBar {
     background-color: #e0e0e0;
     height: 10px;
     text-align: center;
-    font-size: 11px;
+    font-size: 10px;
     color: #303030;
 }
 QProgressBar::chunk {
@@ -89,7 +86,7 @@ QTextEdit, QPlainTextEdit {
     border: 1px solid #c6c6c8;
     border-radius: 8px;
     padding: 8px;
-    font-size: 13px;
+    font-size: 12px;
 }
 QTabWidget::pane {
     border: none;
@@ -115,7 +112,7 @@ QLabel {
 DARK_THEME = """
 * {
     font-family: "Segoe UI", "San Francisco", "Helvetica Neue", sans-serif;
-    font-size: 14px;
+    font-size: 12px;
 }
 QMainWindow {
     background-color: #1c1c1e;
@@ -140,13 +137,7 @@ QGroupBox::title {
     padding: 0 8px 0 8px;
     color: #ffffff;
     font-weight: 600;
-    font-size: 15px;
-}
-QGroupBox * {
-    color: #ffffff;
-}
-QGroupBox QRadioButton {
-    color: #ffffff;
+    font-size: 13px;
 }
 QPushButton {
     background-color: #0a84ff;
@@ -154,7 +145,7 @@ QPushButton {
     border-radius: 10px;
     padding: 10px 24px;
     font-weight: 500;
-    font-size: 14px;
+    font-size: 12px;
     border: none;
 }
 QPushButton:hover {
@@ -166,12 +157,15 @@ QPushButton:pressed {
 QPushButton:disabled {
     background-color: #505050;
 }
+QCheckBox, QRadioButton {
+    color: #ffffff;
+}
 QLineEdit, QSpinBox, QComboBox {
     background-color: #2c2c2e;
     border: 1px solid #48484a;
     border-radius: 8px;
     padding: 8px;
-    font-size: 14px;
+    font-size: 12px;
     color: #ffffff;
 }
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
@@ -179,7 +173,7 @@ QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
     outline: none;
 }
 QComboBox QAbstractItemView {
-    font-size: 14px;
+    font-size: 12px;
     font-family: "Segoe UI", "San Francisco", "Helvetica Neue", sans-serif;
     background-color: #2c2c2e;
     border: 1px solid #48484a;
@@ -192,7 +186,7 @@ QProgressBar {
     background-color: #3a3a3c;
     height: 10px;
     text-align: center;
-    font-size: 11px;
+    font-size: 10px;
     color: #ffffff;
 }
 QProgressBar::chunk {
@@ -204,7 +198,7 @@ QTextEdit, QPlainTextEdit {
     border: 1px solid #48484a;
     border-radius: 8px;
     padding: 8px;
-    font-size: 13px;
+    font-size: 12px;
     color: #ffffff;
 }
 QTabWidget::pane {
