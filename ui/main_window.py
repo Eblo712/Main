@@ -543,11 +543,12 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._on_error(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
 
-        # Удаляем временные файлы экспорта
+        # Удаляем временные файлы экспорта (исправлено имя лога)
         for idb_path, success in results.items():
             if not success:
                 continue
             out_dir = idb_path.parent
+            # Правильное имя: stem файла (например, 7z.exe) + "_script.log"
             script_log = out_dir / (idb_path.stem + "_script.log")
             self._safe_clean_file(script_log, "script log")
             for temp_pat in ["*.id0", "*.id1", "*.nam", "*.til"]:

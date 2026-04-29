@@ -1,12 +1,8 @@
-"""
-Генератор HTML-отчётов из JSON-файлов, созданных IDAPython-скриптом.
-Не зависит от python-idb, работает с IDA Pro 9.3.
-"""
+"""Генератор HTML-отчётов из JSON-файлов, созданных IDAPython-скриптом."""
 import json
 import logging
 from pathlib import Path
-from typing import Optional, List
-from collections import defaultdict
+from typing import List, Optional, Dict, Any
 
 try:
     from jinja2 import Environment, BaseLoader, select_autoescape
@@ -15,13 +11,8 @@ except ImportError:
     _jinja2_available = False
     logging.error("Jinja2 не установлен. Установите: pip install jinja2")
 
-from .module_classifier import classify_category
-
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Шаблон ОДНОГО отчёта (без категорий, без описаний – как было изначально)
-# ---------------------------------------------------------------------------
 REPORT_TEMPLATE = """<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -37,52 +28,99 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
             --hover: #f0f0f5;
         }
         body {
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            margin: 30px;
+            font-family: "Segoe UI", system-ui, sans-serif;
+            font-size: 12px;
+            margin: 20px;
             background: var(--bg);
             color: var(--text);
         }
-        h1, h2 { color: var(--accent); }
-        .search { margin-bottom: 20px; }
+        h1, h2 { color: var(--accent); font-size: 14px; }
+        .back-link {
+            display: block;
+            margin-bottom: 20px;
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .back-link:hover { text-decoration: underline; }
+        .search { margin-bottom: 15px; }
         .search input {
-            width: 100%; padding: 12px; border: 1px solid var(--border);
-            border-radius: 8px; font-size: 16px;
+            width: 100%; padding: 10px; border: 1px solid var(--border);
+            border-radius: 6px; font-size: 12px;
         }
         .card {
-            background: var(--card-bg); border-radius: 12px;
-            margin: 15px 0; padding: 15px;
+            background: var(--card-bg); border-radius: 10px;
+            margin: 12px 0; padding: 12px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
         .card-header {
             cursor: pointer; font-weight: 600;
             display: flex; justify-content: space-between; align-items: center;
+            font-size: 12px;
         }
-        .card-body { display: none; margin-top: 10px; }
+        .card-body { display: none; margin-top: 8px; }
         .card.open .card-body { display: block; }
         table {
-            width: 100%; border-collapse: collapse; margin: 10px 0;
+            width: 100%; border-collapse: collapse; margin: 8px 0;
+            font-size: 11px;
         }
         th, td {
-            text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
+            text-align: left; padding: 6px; border-bottom: 1px solid var(--border);
         }
         th { background: var(--hover); }
         .hexdump {
-            font-family: monospace; white-space: pre-wrap;
-            background: #f0f0f5; padding: 10px; border-radius: 6px; font-size: 13px;
+            font-family: "Consolas", "Courier New", monospace;
+            white-space: pre-wrap;
+            background: #f0f0f5;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 1.4;
+            overflow-x: auto;
         }
         .badge {
             display: inline-block; background: var(--accent); color: white;
-            border-radius: 12px; padding: 2px 10px; font-size: 12px; margin-left: 8px;
+            border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
+        }
+        .module-list {
+            columns: 2;
+            -webkit-columns: 2;
+            -moz-columns: 2;
+            list-style: none;
+            padding-left: 0;
+        }
+        .module-list li {
+            padding: 2px 0;
+            font-family: monospace;
         }
     </style>
 </head>
 <body>
+    <a class="back-link" href="index.html">← Назад к сводному отчёту</a>
+
     <h1>Отчёт анализа: {{ file_name }}</h1>
 
     <div class="search">
-        <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам...">
+        <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам, экспортам...">
     </div>
 
+    <!-- Импортированные модули -->
+    <h2>Импортированные модули <span class="badge">{{ modules|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Список модулей</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if modules %}
+            <ul class="module-list searchable">
+                {% for mod in modules %}
+                <li>{{ mod }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}<p>Нет импортированных модулей.</p>{% endif %}
+        </div>
+    </div>
+
+    <!-- Импорты -->
     <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
@@ -91,10 +129,10 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         <div class="card-body">
             {% if imports %}
             <table>
-                <tr><th>Имя</th><th>Модуль</th><th>Адрес</th></tr>
+                <tr><th>Имя</th><th>Модуль</th></tr>
                 {% for imp in imports %}
                 <tr class="searchable">
-                    <td>{{ imp.name }}</td><td>{{ imp.module }}</td><td>{{ imp.address }}</td>
+                    <td>{{ imp.name }}</td><td>{{ imp.module }}</td>
                 </tr>
                 {% endfor %}
             </table>
@@ -102,6 +140,27 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Экспорты -->
+    <h2>Экспортируемые функции <span class="badge">{{ exports|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Таблица экспорта</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if exports %}
+            <table>
+                <tr><th>Имя</th><th>Адрес</th><th>Ординал</th></tr>
+                {% for exp in exports %}
+                <tr class="searchable">
+                    <td>{{ exp.name }}</td><td>{{ exp.address }}</td><td>{{ exp.ordinal }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            {% else %}<p>Нет экспортируемых функций.</p>{% endif %}
+        </div>
+    </div>
+
+    <!-- Функции -->
     <h2>Дизассемблированные функции <span class="badge">{{ functions|length }}</span></h2>
     {% for func in functions %}
     <div class="card">
@@ -110,14 +169,16 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
             <span>▾</span>
         </div>
         <div class="card-body">
-            <strong>Hex-дамп (первые 256 байт):</strong>
+            <strong>Hex-дамп:</strong>
             <div class="hexdump">{{ func.hexdump }}</div>
-            <strong>Дизассемблирование (первые 100 инструкций):</strong>
+
+            <strong>Дизассемблирование:</strong>
             <table>
-                <tr><th>Адрес</th><th>Мнемоника</th><th>Операнды</th></tr>
+                <tr><th>Адрес</th><th>Инструкция</th></tr>
                 {% for insn in func.instructions %}
                 <tr class="searchable">
-                    <td>{{ insn.address }}</td><td>{{ insn.mnemonic }}</td><td>{{ insn.op_str }}</td>
+                    <td>{{ insn.address }}</td>
+                    <td>{{ insn.instruction }}</td>
                 </tr>
                 {% endfor %}
             </table>
@@ -140,14 +201,11 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
-# ---------------------------------------------------------------------------
-# Шаблон СВОДНОГО ИНДЕКСА (с категориями модулей)
-# ---------------------------------------------------------------------------
 INDEX_TEMPLATE = """<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Индекс отчётов анализа</title>
+    <title>Сводный отчёт анализа</title>
     <style>
         :root {
             --bg: #f5f5f5;
@@ -158,62 +216,94 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
             --hover: #f0f0f5;
         }
         body {
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            margin: 30px;
+            font-family: "Segoe UI", system-ui, sans-serif;
+            font-size: 12px;
+            margin: 20px;
             background: var(--bg);
             color: var(--text);
         }
-        h1, h2 { color: var(--accent); }
+        h1, h2 { color: var(--accent); font-size: 14px; }
         .card {
-            background: var(--card-bg); border-radius: 12px;
-            margin: 15px 0; padding: 15px;
+            background: var(--card-bg); border-radius: 10px;
+            margin: 12px 0; padding: 12px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
-        a { color: #007aff; text-decoration: none; font-weight: 500; }
-        a:hover { text-decoration: underline; }
         ul { padding-left: 20px; }
+        li { margin: 4px 0; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
         .badge {
             display: inline-block; background: var(--accent); color: white;
-            border-radius: 12px; padding: 2px 10px; font-size: 12px; margin-left: 8px;
+            border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
         }
-        .module-list { column-count: 2; }
-        .ida-info { font-size: 13px; color: #666; margin-top: 10px; }
+        .module-list {
+            columns: 2;
+            -webkit-columns: 2;
+            -moz-columns: 2;
+            list-style: none;
+            padding-left: 0;
+        }
+        .module-list li {
+            padding: 2px 0;
+            font-family: monospace;
+        }
+        .file-tree {
+            font-family: monospace;
+            margin: 0;
+            padding-left: 0;
+            list-style: none;
+        }
+        .file-tree li {
+            padding: 2px 0;
+        }
     </style>
 </head>
 <body>
     <h1>Сводный отчёт анализа</h1>
 
     <div class="card">
-        <h2>Сгенерированные отчёты <span class="badge">{{ total_reports }}</span></h2>
+        <h2>Общая информация</h2>
+        <p><strong>Директория анализа:</strong> {{ input_dir }}</p>
+        <p><strong>Исследовано модулей:</strong> {{ total_modules }}</p>
+        {% if ida_info %}
+        <h3>Характеристики IDA Pro</h3>
         <ul>
-            {% for report in reports %}
-            <li><a href="{{ report.link }}">{{ report.name }}</a></li>
+            <li><strong>Версия ядра:</strong> {{ ida_info.kernel_version }}</li>
+        </ul>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>Используемые программные модули среды функционирования <span class="badge">{{ unique_modules|length }}</span></h2>
+        {% if unique_modules %}
+        <ul class="module-list">
+            {% for mod in unique_modules %}
+            <li>{{ mod }}</li>
             {% endfor %}
         </ul>
+        {% else %}
+        <p>Модули не найдены.</p>
+        {% endif %}
     </div>
 
     <div class="card">
-        <h2>Использованные модули <span class="badge">{{ modules|length }}</span></h2>
-        <div class="module-list">
-            <ul>
-                {% for mod, cat, desc in modules_with_categories %}
-                <li>{{ mod }} <span style="color: #888;">[{{ cat }}]</span>{% if desc %} — {{ desc }}{% endif %}</li>
-                {% endfor %}
-            </ul>
-        </div>
+        <h2>Исследованные файлы</h2>
+        {% if reports %}
+        <ul class="file-tree">
+            {% for report in reports %}
+            <li>📄 <a href="{{ report.filename }}" target="_blank">{{ report.display_name }}</a></li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p>Файлы не найдены.</p>
+        {% endif %}
     </div>
-
-    {% if ida_info %}
-    <div class="card">
-        <h2>Информация об IDA Pro</h2>
-        <div class="ida-info">{{ ida_info }}</div>
-    </div>
-    {% endif %}
 </body>
 </html>"""
 
+
 class ReportGenerator:
-    """Создаёт HTML-отчёты из JSON-файла экспорта."""
+    """Создаёт HTML-отчёты из JSON-файлов экспорта."""
     def __init__(self):
         if not _jinja2_available:
             raise ImportError("Jinja2 не установлен. Выполните: pip install jinja2")
@@ -221,60 +311,64 @@ class ReportGenerator:
             loader=BaseLoader(),
             autoescape=select_autoescape(['html', 'xml'])
         )
-        self.report_template = self.env.from_string(REPORT_TEMPLATE)
+        self.template = self.env.from_string(REPORT_TEMPLATE)
         self.index_template = self.env.from_string(INDEX_TEMPLATE)
 
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None) -> Path:
-        """
-        Генерирует индивидуальный HTML-отчёт по JSON-файлу.
-        Без категорий, только сырые импорты и функции.
-        """
+        """Генерирует HTML из JSON-файла экспорта."""
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # Данные передаются как есть – никакой классификации
+        # Добавляем уникальные модули
+        modules_set = set()
+        for imp in data.get("imports", []):
+            mod = imp.get("module")
+            if mod and mod.lower() != "unknown":
+                modules_set.add(mod)
+        data["modules"] = sorted(modules_set)
+
+        if "exports" not in data:
+            data["exports"] = []
+
         if output_html is None:
             output_html = json_path.with_suffix('.html')
         output_html.parent.mkdir(parents=True, exist_ok=True)
 
-        html = self.report_template.render(data)
+        html = self.template.render(data)
         with open(output_html, "w", encoding="utf-8") as f:
             f.write(html)
 
-        logger.info(f"HTML-отчёт сохранён: {output_html}")
         return output_html
 
     def generate_index(self, reports_dir: Path, input_dir: Path,
-                       generated_html_files: List[Path],
-                       sorted_modules: List[str],
-                       ida_info: Optional[str] = None):
+                       report_files: List[Path], unique_modules: List[str],
+                       ida_info: Optional[Dict[str, Any]] = None) -> Path:
         """
-        Создаёт сводный индексный файл index.html с категоризацией модулей.
+        Создаёт index.html со ссылками на все отчёты, общей статистикой и информацией об IDA.
         """
         reports = []
-        for html_path in generated_html_files:
+        for path in report_files:
+            display_name = path.stem  # имя файла отчёта без .html
             reports.append({
-                "link": html_path.name,
-                "name": html_path.stem
+                "filename": path.name,
+                "display_name": display_name,
             })
 
-        # Классифицируем модули для сводной страницы
-        modules_with_categories = []
-        for mod in sorted_modules:
-            cat, desc = classify_category(mod)
-            modules_with_categories.append((mod, cat, desc))
+        data = {
+            "input_dir": str(input_dir),
+            "total_modules": len(report_files),
+            "unique_modules": unique_modules,
+            "reports": reports,
+            "ida_info": ida_info,
+        }
 
         index_path = reports_dir / "index.html"
-        html = self.index_template.render(
-            total_reports=len(reports),
-            reports=reports,
-            modules=sorted_modules,
-            modules_with_categories=modules_with_categories,
-            ida_info=ida_info.replace("\n", "<br>") if ida_info else None
-        )
+        html = self.index_template.render(data)
         with open(index_path, "w", encoding="utf-8") as f:
             f.write(html)
-        logger.info(f"Индексный файл сохранён: {index_path}")
+
+        logger.info(f"Сводный отчёт сохранён: {index_path}")
+        return index_path
