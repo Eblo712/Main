@@ -1,19 +1,15 @@
-"""Генератор HTML-отчётов из JSON-файлов, созданных IDAPython-скриптом."""
+"""Генератор HTML-отчётов с классификацией модулей (описания только в индексе)."""
 import json
 import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-
-try:
-    from jinja2 import Environment, BaseLoader, select_autoescape
-    _jinja2_available = True
-except ImportError:
-    _jinja2_available = False
-    logging.error("Jinja2 не установлен. Установите: pip install jinja2")
+from jinja2 import Environment, BaseLoader, select_autoescape
+from core.module_classifier import classify_module
 
 logger = logging.getLogger(__name__)
 
-REPORT_TEMPLATE = """<!DOCTYPE html>
+REPORT_TEMPLATE = """
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -103,7 +99,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам, экспортам...">
     </div>
 
-    <!-- Импортированные модули -->
+    <!-- Импортированные модули (только имена, без описаний) -->
     <h2>Импортированные модули <span class="badge">{{ modules|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
@@ -201,7 +197,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
-INDEX_TEMPLATE = """<!DOCTYPE html>
+INDEX_TEMPLATE = """
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -274,11 +271,11 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="card">
-        <h2>Используемые программные модули среды функционирования <span class="badge">{{ unique_modules|length }}</span></h2>
-        {% if unique_modules %}
-        <ul class="module-list">
-            {% for mod in unique_modules %}
-            <li>{{ mod }}</li>
+        <h2>Классификация импортированных модулей</h2>
+        {% if classified_modules %}
+        <ul>
+            {% for mod_info in classified_modules %}
+            <li><strong>{{ mod_info.module }}</strong>: {{ mod_info.category }}</li>
             {% endfor %}
         </ul>
         {% else %}
@@ -305,8 +302,6 @@ INDEX_TEMPLATE = """<!DOCTYPE html>
 class ReportGenerator:
     """Создаёт HTML-отчёты из JSON-файлов экспорта."""
     def __init__(self):
-        if not _jinja2_available:
-            raise ImportError("Jinja2 не установлен. Выполните: pip install jinja2")
         self.env = Environment(
             loader=BaseLoader(),
             autoescape=select_autoescape(['html', 'xml'])
@@ -315,20 +310,20 @@ class ReportGenerator:
         self.index_template = self.env.from_string(INDEX_TEMPLATE)
 
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None) -> Path:
-        """Генерирует HTML из JSON-файла экспорта."""
+        """Генерирует HTML из JSON-файла экспорта (модули без описаний)."""
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # Добавляем уникальные модули
+        # Собираем только уникальные имена модулей
         modules_set = set()
         for imp in data.get("imports", []):
             mod = imp.get("module")
             if mod and mod.lower() != "unknown":
                 modules_set.add(mod)
-        data["modules"] = sorted(modules_set)
+        data["modules"] = sorted(modules_set)   # простой список строк
 
         if "exports" not in data:
             data["exports"] = []
@@ -347,20 +342,27 @@ class ReportGenerator:
                        report_files: List[Path], unique_modules: List[str],
                        ida_info: Optional[Dict[str, Any]] = None) -> Path:
         """
-        Создаёт index.html со ссылками на все отчёты, общей статистикой и информацией об IDA.
+        Создаёт index.html с полной классификацией модулей.
         """
         reports = []
         for path in report_files:
-            display_name = path.stem  # имя файла отчёта без .html
+            display_name = path.stem
             reports.append({
                 "filename": path.name,
                 "display_name": display_name,
             })
 
+        # Классифицируем каждый уникальный модуль
+        classified = [
+            {"module": mod, "category": classify_module(mod)}
+            for mod in unique_modules
+        ]
+
         data = {
             "input_dir": str(input_dir),
             "total_modules": len(report_files),
             "unique_modules": unique_modules,
+            "classified_modules": classified,
             "reports": reports,
             "ida_info": ida_info,
         }
