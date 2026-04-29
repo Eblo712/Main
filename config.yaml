@@ -1,0 +1,7 @@
+default_inputdir: .
+ida:
+  idat32: idat.exe
+  idat64: idat.exe
+log_level: INFO
+max_ida: 6
+theme: light
