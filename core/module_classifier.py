@@ -883,14 +883,6 @@ _ALL_MODULES.update(_THIRD_PARTY_CRYPTO_MORE)
 # НОРМАЛИЗАЦИЯ И КЛАССИФИКАЦИЯ
 # ------------------------------------------------------------
 
-def _normalize_name(name: str) -> str:
-    """Убирает расширение и приводит к нижнему регистру."""
-    for ext in ('.dll', '.so', '.dylib', '.drv', '.sys', '.exe'):
-        if name.endswith(ext):
-            name = name[:-len(ext)]
-            break
-    return name.lower()
-
 # Объединяем все словари в один нормализованный
 _ALL_MODULES = {}
 # Собираем все ваши словари (перечислите их все, как делали раньше)
@@ -922,139 +914,169 @@ for d in [
     _THIRD_PARTY_TERMINAL, _THIRD_PARTY_COMPRESSION_MORE, _THIRD_PARTY_CRYPTO_MORE
 ]:
     _ALL_MODULES.update(d)
+    
+def _normalize_name(name: str) -> str:
+    """Убирает расширение и приводит к нижнему регистру."""
+    for ext in ('.dll', '.so', '.dylib', '.drv', '.sys', '.exe'):
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+            break
+    return name.lower()
 
-# Строим нормализованную базу
 _NORMALIZED_ALL_MODULES = {}
 for original_name, description in _ALL_MODULES.items():
     norm_key = _normalize_name(original_name)
     if norm_key not in _NORMALIZED_ALL_MODULES:
         _NORMALIZED_ALL_MODULES[norm_key] = description
 
-# Вспомогательная функция
-def _normalize_dict(d):
-    return {_normalize_name(k): v for k, v in d.items()}
-
-# Группы словарей для категорий (используются после объявления _normalize_name)
-_SYSTEM_DICTS = [
-    _WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM,
-    _WINDOWS_USER_SUBSYSTEM, _WINDOWS_SYSTEM_SERVICES,
-    _WINDOWS_USB_DEVICE, _WINDOWS_SUBSYSTEM_COMPAT,
-    _WINDOWS_API_SETS, _WINDOWS_DOTNET,
-    _LINUX_CORE_LIBS, _LINUX_DYNAMIC_LINKER, _LINUX_SYSTEM_SERVICES,
-    _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION,
-    _ANDROID_CORE, _ANDROID_BINDER, _ANDROID_RUNTIME,
-    _ANDROID_NETWORK_MONITORING,
-]
-
-_SECURITY_DICTS = [
-    _WINDOWS_SECURITY_CRYPTO, _WINDOWS_BCRYPTPRIMITIVES,
-    _LINUX_SECURITY, _MACOS_CRYPTO, _ANDROID_CRYPTO,
-    _THIRD_PARTY_CRYPTO, _THIRD_PARTY_CRYPTO_MORE,
-    _LINUX_SECURITY_EXTRA, _LINUX_CRYPTO_EXTRA,
-]
-
-_NETWORK_DICTS = [
-    _WINDOWS_NETWORK, _MACOS_NETWORK,
-    _ANDROID_NETWORK, _ANDROID_BLUETOOTH,
-    _THIRD_PARTY_NETWORK, _THIRD_PARTY_BROWSER,
-    _THIRD_PARTY_VPN, _THIRD_PARTY_RPC, _THIRD_PARTY_RPC_MORE,
-    _THIRD_PARTY_JAVASCRIPT,
-]
-
-_GRAPHICS_MULTIMEDIA_DICTS = [
-    _WINDOWS_GRAPHICS_MULTIMEDIA, _THIRD_PARTY_GRAPHICS,
-    _THIRD_PARTY_IMAGE, _THIRD_PARTY_AUDIO,
-    _THIRD_PARTY_CV, _THIRD_PARTY_GAME_MULTIMEDIA,
-    _THIRD_PARTY_2D_GRAPHICS, _THIRD_PARTY_GUI_MORE,
-    _THIRD_PARTY_TERMINAL,
-    _ANDROID_NATIVE_WINDOW, _ANDROID_MEDIA, _ANDROID_GRAPHICS,
-    _ANDROID_CAMERA, _ANDROID_MEDIA_NDK, _ANDROID_AUDIO,
-]
-
-_RUNTIME_DICTS = [
-    _WINDOWS_RUNTIME, _LINUX_COMPILER_RUNTIME,
-    _MACOS_SWIFT, _THIRD_PARTY_ML, _THIRD_PARTY_ML_MORE,
-    _ANDROID_NDK, _ANDROID_ICU,
-]
-
-_STANDALONE_DICTS = [
-    _WINDOWS_SERVER_CORE, _WINDOWS_OPENSSL_MODERN,
-    _LINUX_SYSTEMD_LIBS, _LINUX_SECURITY_EXTRA, _LINUX_CRYPTO_EXTRA,
-    _MACOS_EXPAT, _MACOS_FONTCONFIG, _MACOS_BORINGSSL,
-    _THIRD_PARTY_COMPRESSION, _THIRD_PARTY_DATABASE, _THIRD_PARTY_LOGGING,
-    _THIRD_PARTY_XML, _THIRD_PARTY_VIRTUALIZATION, _THIRD_PARTY_QT,
-    _THIRD_PARTY_IMAGE, _THIRD_PARTY_AUDIO, _THIRD_PARTY_CV,
-    _THIRD_PARTY_ML_MORE, _THIRD_PARTY_RPC_MORE,
-    _THIRD_PARTY_GAME_MULTIMEDIA, _THIRD_PARTY_2D_GRAPHICS,
-    _THIRD_PARTY_GUI_MORE, _THIRD_PARTY_TERMINAL,
-    _THIRD_PARTY_COMPRESSION_MORE, _THIRD_PARTY_CRYPTO_MORE,
-]
-
-# ------------------------------------------------------------
-# ПУБЛИЧНЫЕ ФУНКЦИИ
-# ------------------------------------------------------------
-
 def classify_module(module_name: str) -> str:
     """
-    Возвращает описание модуля на основе базы знаний.
-    Если модуль не найден, возвращает общую строку с типом файла.
+    Возвращает наиболее точное описание модуля.
+    Приоритет: точное совпадение в нормализованной базе → эвристика по имени → «Неопознанный модуль».
     """
-    norm = _normalize_name(module_name)
-    if norm in _NORMALIZED_ALL_MODULES:
-        return _NORMALIZED_ALL_MODULES[norm]
-    # Эвристики
-    if norm.startswith("api-ms-win-") or norm.startswith("ext-ms-win-"):
-        return "Windows API Set"
+    norm_name = _normalize_name(module_name)
+
+    if norm_name in _NORMALIZED_ALL_MODULES:
+        return _NORMALIZED_ALL_MODULES[norm_name]
+
+    # Эвристика: Windows API Set
+    if norm_name.startswith("api-ms-win-"):
+        return "Windows API Set (контрактная DLL с гарантированным присутствием на всех версиях Windows)"
+    if norm_name.startswith("ext-ms-win-"):
+        return "Windows API Set (расширенная контрактная DLL, может отсутствовать на некоторых редакциях Windows)"
+
+    # Эвристика: по расширению
     if module_name.lower().endswith(".dll"):
         return "Неопознанная Windows DLL"
-    if "lib" in norm and ".so" in module_name:
+    if module_name.startswith("lib") and ".so" in module_name:
         return "Неопознанная Linux shared library"
     if module_name.lower().endswith(".dylib"):
         return "Неопознанная macOS / iOS dynamic library"
+
     return "Неопознанный модуль"
 
 
-def classify_category(module_name: str) -> tuple:
+# ═══════════════════════════════════════════════════════════════════════════════
+# Детерминированная группировка словарей по категориям
+# ═══════════════════════════════════════════════════════════════════════════════
+# Списки словарей, сгруппированные по категориям.
+# (_WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM и т.д. – все те же переменные,
+#  что были определены ранее в файле. Здесь они используются по именам.)
+
+_CATEGORIES = {
+    "Системные библиотеки ОС": {
+        "description": (
+            "Базовые библиотеки операционной системы: "
+            "управление памятью, процессами, файлами, системные вызовы, "
+            "аппаратная абстракция, подсистемы совместимости (WOW64), "
+            "динамическая загрузка, POSIX-функции, runtime Android."
+        ),
+        "dicts": [
+            _WINDOWS_HAL, _WINDOWS_NATIVE_API, _WINDOWS_KERNEL_SUBSYSTEM,
+            _WINDOWS_USER_SUBSYSTEM, _WINDOWS_SYSTEM_SERVICES,
+            _WINDOWS_USB_DEVICE, _WINDOWS_SUBSYSTEM_COMPAT,
+            _WINDOWS_API_SETS, _WINDOWS_DOTNET,
+            _LINUX_CORE_LIBS, _LINUX_DYNAMIC_LINKER, _LINUX_SYSTEM_SERVICES,
+            _MACOS_CORE, _MACOS_DISPATCH, _MACOS_FOUNDATION,
+            _ANDROID_CORE, _ANDROID_BINDER, _ANDROID_RUNTIME,
+            _ANDROID_NETWORK_MONITORING,
+        ],
+    },
+    "Криптография и безопасность": {
+        "description": (
+            "Криптографические операции (шифрование, хеширование, цифровые подписи), "
+            "протоколы SSL/TLS, управление сертификатами, "
+            "системы аутентификации, контроль доступа (AppArmor, SELinux, PAM), "
+            "хеширование паролей, генерация ключей."
+        ),
+        "dicts": [
+            _WINDOWS_SECURITY_CRYPTO, _WINDOWS_BCRYPTPRIMITIVES,
+            _LINUX_SECURITY, _MACOS_CRYPTO, _ANDROID_CRYPTO,
+            _THIRD_PARTY_CRYPTO, _THIRD_PARTY_CRYPTO_MORE,
+            _LINUX_SECURITY_EXTRA, _LINUX_CRYPTO_EXTRA,
+        ],
+    },
+    "Сеть и коммуникации": {
+        "description": (
+            "Сетевые протоколы (TCP/UDP, HTTP, FTP, WebSocket), "
+            "разрешение DNS, удалённый вызов процедур (RPC, gRPC, AMQP, Kafka), "
+            "VPN-туннели, Bluetooth, браузерные движки (CEF, WebKit), "
+            "JavaScript-движки (V8)."
+        ),
+        "dicts": [
+            _WINDOWS_NETWORK, _MACOS_NETWORK,
+            _ANDROID_NETWORK, _ANDROID_BLUETOOTH,
+            _THIRD_PARTY_NETWORK, _THIRD_PARTY_BROWSER,
+            _THIRD_PARTY_VPN, _THIRD_PARTY_RPC, _THIRD_PARTY_RPC_MORE,
+            _THIRD_PARTY_JAVASCRIPT,
+        ],
+    },
+    "Графика и мультимедиа": {
+        "description": (
+            "2D/3D-графика, видео и аудио, рендеринг шрифтов, "
+            "обработка изображений (JPEG, PNG, WebP, RAW), "
+            "звуковые системы (PulseAudio, ALSA, OpenAL), "
+            "компьютерное зрение (OpenCV), игровые движки (OGRE, Bullet Physics), "
+            "медиа-фреймворки (FFmpeg, GStreamer, VLC), GUI-тулкиты (Qt, GTK, wxWidgets)."
+        ),
+        "dicts": [
+            _WINDOWS_GRAPHICS_MULTIMEDIA, _THIRD_PARTY_GRAPHICS,
+            _THIRD_PARTY_IMAGE, _THIRD_PARTY_AUDIO,
+            _THIRD_PARTY_CV, _THIRD_PARTY_GAME_MULTIMEDIA,
+            _THIRD_PARTY_2D_GRAPHICS, _THIRD_PARTY_GUI_MORE,
+            _THIRD_PARTY_TERMINAL,
+            _ANDROID_NATIVE_WINDOW, _ANDROID_MEDIA, _ANDROID_GRAPHICS,
+            _ANDROID_CAMERA, _ANDROID_MEDIA_NDK, _ANDROID_AUDIO,
+        ],
+    },
+    "Среды выполнения, научные и ML-библиотеки": {
+        "description": (
+            "Библиотеки времени выполнения (MSVCRT, libstdc++), "
+            "машинное обучение (TensorFlow, PyTorch, ONNX Runtime, TensorRT), "
+            "высокопроизводительные вычисления (OpenBLAS, Armadillo, GSL, FFTW), "
+            "арифметика произвольной точности (GMP, MPFR), "
+            "NDK-библиотеки Android, ICU для интернационализации."
+        ),
+        "dicts": [
+            _WINDOWS_RUNTIME, _LINUX_COMPILER_RUNTIME,
+            _MACOS_SWIFT, _THIRD_PARTY_ML, _THIRD_PARTY_ML_MORE,
+            _ANDROID_NDK, _ANDROID_ICU,
+        ],
+    },
+    "Работа с данными, архивация и XML": {
+        "description": (
+            "Сжатие и архивация (zlib, bzip2, LZMA, Brotli, Zstd, Snappy, LZ4), "
+            "работа с архивами (ZIP, RAR, tar, 7z), "
+            "базы данных (SQLite, MySQL, PostgreSQL), "
+            "парсеры XML (libxml2, Expat), логирование (log4cplus, log4net), "
+            "сериализация (Protocol Buffers, MessagePack, Avro, FlatBuffers), "
+            "шрифты (Fontconfig)."
+        ),
+        "dicts": [
+            _THIRD_PARTY_COMPRESSION, _THIRD_PARTY_COMPRESSION_MORE,
+            _THIRD_PARTY_DATABASE, _THIRD_PARTY_LOGGING,
+            _THIRD_PARTY_XML, _THIRD_PARTY_RPC_MORE,
+            _LINUX_COMPRESSION, _LINUX_XML_PARSING, _LINUX_DATABASE,
+            _MACOS_FONTCONFIG, _MACOS_EXPAT,
+            _ANDROID_EXPAT,
+            _WINDOWS_SERVER_CORE,
+            _WINDOWS_OPENSSL_MODERN,
+            _LINUX_SYSTEMD_LIBS,
+            _MACOS_BORINGSSL,
+            _THIRD_PARTY_VIRTUALIZATION,
+        ],
+    },
+}
+
+
+def get_module_category_and_description(module_name: str):
     """
-    Возвращает кортеж (категория, описание).
-    Категории: "Системные библиотеки", "Криптография и безопасность",
-               "Сетевые компоненты", "Графика и мультимедиа",
-               "Библиотеки времени выполнения", "Сторонние библиотеки",
-               "Без категории".
+    Возвращает (category_name, category_description)
+    если модуль найден в одном из словарей категорий, иначе ("Неопознанные модули", "").
     """
     norm = _normalize_name(module_name)
-    # Сначала точное совпадение в базе
-    if norm in _NORMALIZED_ALL_MODULES:
-        desc = _NORMALIZED_ALL_MODULES[norm]
-        # Определяем категорию
-        if _in_any_dict(norm, _SYSTEM_DICTS):
-            return "Системные библиотеки", desc
-        if _in_any_dict(norm, _SECURITY_DICTS):
-            return "Криптография и безопасность", desc
-        if _in_any_dict(norm, _NETWORK_DICTS):
-            return "Сетевые компоненты", desc
-        if _in_any_dict(norm, _GRAPHICS_MULTIMEDIA_DICTS):
-            return "Графика и мультимедиа", desc
-        if _in_any_dict(norm, _RUNTIME_DICTS):
-            return "Библиотеки времени выполнения", desc
-        # Остальные известные – сторонние
-        return "Сторонние библиотеки", desc
-
-    # Эвристики для неизвестных
-    if norm.startswith("api-ms-win-") or norm.startswith("ext-ms-win-"):
-        return "Системные библиотеки", "Windows API Set"
-    if module_name.lower().endswith(".dll"):
-        return "Без категории", "Неопознанная Windows DLL"
-    if "lib" in norm and ".so" in module_name:
-        return "Без категории", "Неопознанная Linux shared library"
-    if module_name.lower().endswith(".dylib"):
-        return "Без категории", "Неопознанная macOS / iOS dynamic library"
-    return "Без категории", "Неопознанный модуль"
-
-
-def _in_any_dict(norm_key, dicts):
-    """Проверяет, содержится ли нормализованный ключ в одном из словарей."""
-    for d in dicts:
-        if norm_key in _normalize_dict(d):
-            return True
-    return False
+    for category, info in _CATEGORIES.items():
+        for d in info["dicts"]:
+            if norm in [_normalize_name(k) for k in d.keys()]:
+                return category, info["description"]
+    return "Неопознанные модули", ""

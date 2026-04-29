@@ -1,10 +1,10 @@
-"""Генератор HTML-отчётов с классификацией модулей (описания только в индексе)."""
+"""Генератор HTML-отчётов с детерминированной группировкой модулей по словарям."""
 import json
 import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from jinja2 import Environment, BaseLoader, select_autoescape
-from core.module_classifier import classify_module
+from core.module_classifier import classify_module, get_module_category_and_description
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,11 @@ REPORT_TEMPLATE = """
             padding: 2px 0;
             font-family: monospace;
         }
+        .unknown-section {
+            margin-top: 16px;
+            border-left: 4px solid #ff9500;
+            padding-left: 16px;
+        }
     </style>
 </head>
 <body>
@@ -99,24 +104,40 @@ REPORT_TEMPLATE = """
         <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам, экспортам...">
     </div>
 
-    <!-- Импортированные модули (только имена, без описаний) -->
-    <h2>Импортированные модули <span class="badge">{{ modules|length }}</span></h2>
+    <h2>Импортированные модули (опознанные) <span class="badge">{{ known_modules|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
             <span>Список модулей</span><span>▾</span>
         </div>
         <div class="card-body">
-            {% if modules %}
+            {% if known_modules %}
             <ul class="module-list searchable">
-                {% for mod in modules %}
+                {% for mod in known_modules %}
                 <li>{{ mod }}</li>
                 {% endfor %}
             </ul>
-            {% else %}<p>Нет импортированных модулей.</p>{% endif %}
+            {% else %}<p>Нет опознанных модулей.</p>{% endif %}
         </div>
     </div>
 
-    <!-- Импорты -->
+    {% if unknown_modules %}
+    <div class="unknown-section">
+        <h2>Импортированные модули (неопознанные) <span class="badge">{{ unknown_modules|length }}</span></h2>
+        <div class="card">
+            <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+                <span>Требуют ручного анализа</span><span>▾</span>
+            </div>
+            <div class="card-body">
+                <ul class="module-list searchable">
+                    {% for mod in unknown_modules %}
+                    <li>{{ mod }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
@@ -136,7 +157,6 @@ REPORT_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Экспорты -->
     <h2>Экспортируемые функции <span class="badge">{{ exports|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
@@ -156,7 +176,6 @@ REPORT_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Функции -->
     <h2>Дизассемблированные функции <span class="badge">{{ functions|length }}</span></h2>
     {% for func in functions %}
     <div class="card">
@@ -220,6 +239,11 @@ INDEX_TEMPLATE = """
             color: var(--text);
         }
         h1, h2 { color: var(--accent); font-size: 14px; }
+        h3 {
+            font-size: 13px;
+            margin: 10px 0 4px;
+            color: #555;
+        }
         .card {
             background: var(--card-bg); border-radius: 10px;
             margin: 12px 0; padding: 12px;
@@ -233,17 +257,6 @@ INDEX_TEMPLATE = """
             display: inline-block; background: var(--accent); color: white;
             border-radius: 10px; padding: 2px 8px; font-size: 10px; margin-left: 8px;
         }
-        .module-list {
-            columns: 2;
-            -webkit-columns: 2;
-            -moz-columns: 2;
-            list-style: none;
-            padding-left: 0;
-        }
-        .module-list li {
-            padding: 2px 0;
-            font-family: monospace;
-        }
         .file-tree {
             font-family: monospace;
             margin: 0;
@@ -252,6 +265,12 @@ INDEX_TEMPLATE = """
         }
         .file-tree li {
             padding: 2px 0;
+        }
+        .category-description {
+            font-size: 11px;
+            color: #666;
+            margin: 0 0 8px 20px;
+            font-style: italic;
         }
     </style>
 </head>
@@ -272,12 +291,18 @@ INDEX_TEMPLATE = """
 
     <div class="card">
         <h2>Классификация импортированных модулей</h2>
-        {% if classified_modules %}
-        <ul>
-            {% for mod_info in classified_modules %}
-            <li><strong>{{ mod_info.module }}</strong>: {{ mod_info.category }}</li>
+        {% if grouped_categories %}
+            {% for category in grouped_categories %}
+                <h3>{{ category.name }} <span class="badge">{{ category.count }}</span></h3>
+                {% if category.description %}
+                <p class="category-description">{{ category.description }}</p>
+                {% endif %}
+                <ul>
+                    {% for mod in category.modules %}
+                        <li>{{ mod }}</li>
+                    {% endfor %}
+                </ul>
             {% endfor %}
-        </ul>
         {% else %}
         <p>Модули не найдены.</p>
         {% endif %}
@@ -301,6 +326,7 @@ INDEX_TEMPLATE = """
 
 class ReportGenerator:
     """Создаёт HTML-отчёты из JSON-файлов экспорта."""
+
     def __init__(self):
         self.env = Environment(
             loader=BaseLoader(),
@@ -310,20 +336,30 @@ class ReportGenerator:
         self.index_template = self.env.from_string(INDEX_TEMPLATE)
 
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None) -> Path:
-        """Генерирует HTML из JSON-файла экспорта (модули без описаний)."""
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # Собираем только уникальные имена модулей
-        modules_set = set()
+        known = []
+        unknown = []
+        seen = set()
         for imp in data.get("imports", []):
             mod = imp.get("module")
-            if mod and mod.lower() != "unknown":
-                modules_set.add(mod)
-        data["modules"] = sorted(modules_set)   # простой список строк
+            if not mod or mod.lower() == "unknown":
+                continue
+            if mod in seen:
+                continue
+            seen.add(mod)
+            category = classify_module(mod)
+            if "Неопознанный" in category:
+                unknown.append(mod)
+            else:
+                known.append(mod)
+
+        data["known_modules"] = sorted(known)
+        data["unknown_modules"] = sorted(unknown)
 
         if "exports" not in data:
             data["exports"] = []
@@ -341,9 +377,7 @@ class ReportGenerator:
     def generate_index(self, reports_dir: Path, input_dir: Path,
                        report_files: List[Path], unique_modules: List[str],
                        ida_info: Optional[Dict[str, Any]] = None) -> Path:
-        """
-        Создаёт index.html с полной классификацией модулей.
-        """
+
         reports = []
         for path in report_files:
             display_name = path.stem
@@ -352,17 +386,32 @@ class ReportGenerator:
                 "display_name": display_name,
             })
 
-        # Классифицируем каждый уникальный модуль
-        classified = [
-            {"module": mod, "category": classify_module(mod)}
-            for mod in unique_modules
-        ]
+        # Детерминированная группировка по словарям
+        categories = {}
+        for mod in unique_modules:
+            cat, desc = get_module_category_and_description(mod)
+            categories.setdefault(cat, {"description": desc, "modules": []})
+            categories[cat]["modules"].append(mod)
+
+        grouped_list = []
+        # Сортируем: сначала все категории, кроме "Неопознанные", потом неопознанные
+        sorted_cats = sorted([c for c in categories if c != "Неопознанные модули"])
+        if "Неопознанные модули" in categories:
+            sorted_cats.append("Неопознанные модули")
+
+        for cat in sorted_cats:
+            info = categories[cat]
+            grouped_list.append({
+                "name": cat,
+                "description": info["description"],
+                "modules": sorted(info["modules"], key=str.lower),
+                "count": len(info["modules"]),
+            })
 
         data = {
             "input_dir": str(input_dir),
             "total_modules": len(report_files),
-            "unique_modules": unique_modules,
-            "classified_modules": classified,
+            "grouped_categories": grouped_list,
             "reports": reports,
             "ida_info": ida_info,
         }
