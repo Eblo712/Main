@@ -12,8 +12,10 @@ import ida_nalt
 def export_to_json(output_path=None):
     idaapi.auto_wait()
     if output_path is None:
-        input_file = idc.get_input_file_path()
-        output_path = input_file + ".export.json"
+        # Получаем путь к открытой базе (например, .../7zG.exe.i64)
+        idb_path = idc.get_idb_path()
+        output_path = idb_path + ".export.json"
+        print(f"[IDAPython] Output will be: {output_path}")
 
     data = {
         "file_name": idc.get_input_file_path(),
@@ -29,7 +31,6 @@ def export_to_json(output_path=None):
             continue
         size = func.size()
 
-        # Дизассемблирование (первые 100 инструкций)
         instructions = []
         for head in idautils.Heads(ea, ea + min(size, 256)):
             mnem = idc.print_insn_mnem(head)
@@ -42,7 +43,6 @@ def export_to_json(output_path=None):
             if len(instructions) >= 100:
                 break
 
-        # Hex-дамп (первые 256 байт)
         raw = idc.get_bytes(ea, min(size, 256))
         hexdump = raw.hex(' ') if raw else ""
 
@@ -54,7 +54,7 @@ def export_to_json(output_path=None):
             "hexdump": hexdump
         })
 
-    # Импорты – правильный способ для IDA 9.3
+    # Импорты
     try:
         import_module_count = ida_nalt.get_import_module_qty()
     except AttributeError:
@@ -67,7 +67,6 @@ def export_to_json(output_path=None):
         except AttributeError:
             module_name = "unknown"
 
-        # Коллбэк для перечисления имён внутри модуля
         def callback(ea, name, ordinal):
             if name:
                 data["imports"].append({
@@ -75,14 +74,13 @@ def export_to_json(output_path=None):
                     "module": module_name,
                     "address": f"0x{ea:X}"
                 })
-            return True  # продолжаем перечисление
+            return True
 
         try:
             ida_nalt.enum_import_names(mod_index, callback)
         except AttributeError:
             print(f"[IDAPython] ida_nalt.enum_import_names() not available for module {module_name}.")
 
-    # Сортировка функций по адресу
     data["functions"].sort(key=lambda f: int(f["start_ea"], 16))
 
     with open(output_path, "w", encoding="utf-8") as f:

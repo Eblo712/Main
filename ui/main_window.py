@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QPoint, QThread, Signal
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 import os
 import webbrowser
 
@@ -21,28 +21,15 @@ from core.ida import IDAAnalyzer
 from ui.theme import apply_theme
 
 PLATFORM_EXTENSIONS = {
-    "Windows": {
-        "label": "Windows",
-        "exts": [".exe", ".dll", ".sys", ".ocx", ".cpl", ".scr", ".drv", ".efi"],
-    },
-    "Linux / Android": {
-        "label": "Linux / Android",
-        "exts": [".elf", ".so", ".o", ".ko", ".dex"],
-    },
-    "macOS / iOS": {
-        "label": "macOS / iOS",
-        "exts": [".mach-o", ".dylib", ".bundle", ".app"],
-    },
-    "All platforms": {
-        "label": "Все платформы",
-        "exts": [".exe", ".dll", ".sys", ".elf", ".so", ".o", ".mach-o", ".dylib", ".dex"],
-    },
+    "Windows": {"label": "Windows", "exts": [".exe", ".dll", ".sys", ".ocx", ".cpl", ".scr", ".drv", ".efi"]},
+    "Linux / Android": {"label": "Linux / Android", "exts": [".elf", ".so", ".o", ".ko", ".dex"]},
+    "macOS / iOS": {"label": "macOS / iOS", "exts": [".mach-o", ".dylib", ".bundle", ".app"]},
+    "All platforms": {"label": "Все платформы", "exts": [".exe", ".dll", ".sys", ".elf", ".so", ".o", ".mach-o", ".dylib", ".dex"]},
 }
 
 class ExportWorker(QThread):
-    """Поток для выполнения IDAPython-скрипта на списке .i64 файлов."""
-    progress_updated = Signal(str, int, int)   # filename, current, total
-    finished = Signal(int, int)                # succeeded, total
+    progress_updated = Signal(str, int, int)
+    finished = Signal(int, int)          # succeeded, total
     error_occurred = Signal(str)
 
     def __init__(self, idb_files: List[Path], script_path: Path,
@@ -52,7 +39,7 @@ class ExportWorker(QThread):
         self.script_path = script_path
         self.idat_path = idat_path
         self.max_workers = max_workers
-        self.results: dict = {}    # сюда сохраним результаты
+        self.results = {}
         self._cancel = False
 
     def run(self):
@@ -90,9 +77,6 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         apply_theme(QApplication.instance(), self.current_theme)
 
-    # ------------------------------------------------------------------
-    # Вспомогательные элементы интерфейса
-    # ------------------------------------------------------------------
     @staticmethod
     def _create_help_button(tooltip_text: str) -> QPushButton:
         btn = QPushButton()
@@ -148,9 +132,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(value_label)
         return container, slider, value_label
 
-    # ------------------------------------------------------------------
-    # Построение интерфейса
-    # ------------------------------------------------------------------
     def _build_ui(self):
         central = QWidget(objectName="central")
         self.setCentralWidget(central)
@@ -158,7 +139,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Боковая панель
         sidebar = QWidget(objectName="sidebar")
         sidebar.setFixedWidth(220)
         sidebar_layout = QVBoxLayout(sidebar)
@@ -189,7 +169,6 @@ class MainWindow(QMainWindow):
         self.btn_settings.setStyleSheet(self._menu_button_style(False, self.current_theme))
         sidebar_layout.addWidget(self.btn_settings)
 
-        # Стек страниц
         self.pages = QStackedWidget()
         self.analysis_page = self._create_analysis_page()
         self.settings_page = SettingsPage()
@@ -203,9 +182,6 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
         main_layout.addWidget(self.pages, 1)
 
-    # ------------------------------------------------------------------
-    # Страница анализа
-    # ------------------------------------------------------------------
     def _create_analysis_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -239,8 +215,7 @@ class MainWindow(QMainWindow):
         self.platform_buttons.setExclusive(True)
         self.radio_to_platform = {}
         grid = QGridLayout()
-        row = 0
-        col = 0
+        row, col = 0, 0
         for key, info in PLATFORM_EXTENSIONS.items():
             radio = QRadioButton(info["label"])
             self.platform_buttons.addButton(radio)
@@ -266,7 +241,6 @@ class MainWindow(QMainWindow):
         platform_layout.addLayout(grid)
         scan_layout.addWidget(platform_group)
 
-        # Потоки IDA
         self.max_ida_slider_container, self.max_ida_slider, self.max_ida_label = \
             self._create_slider_with_label(min(get_max_ida(), 32), range_max=32)
         slider_row = QHBoxLayout()
@@ -278,7 +252,6 @@ class MainWindow(QMainWindow):
         ))
         scan_layout.addLayout(slider_row)
 
-        # Флаги анализа
         flags_group = QGroupBox("Флаги анализа")
         flags_layout = QVBoxLayout(flags_group)
         self.cleanup_check = QCheckBox("Удалять .asm и .log после успешного анализа")
@@ -291,7 +264,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(scan_group)
 
-        # Прогресс
+        # Прогресс анализа
         progress_group = QGroupBox("Прогресс анализа")
         progress_layout = QVBoxLayout(progress_group)
         self.current_file_label = QLabel("Готов к запуску")
@@ -311,6 +284,30 @@ class MainWindow(QMainWindow):
         progress_layout.addLayout(btn_row)
         layout.addWidget(progress_group)
 
+        # Параметры отчёта (новый раздел)
+        report_group = QGroupBox("Параметры отчёта")
+        report_layout = QVBoxLayout(report_group)
+
+        self.report_progress_label = QLabel("Готов к созданию отчётов")
+        self.report_progress_bar = QProgressBar()
+        self.report_progress_bar.setRange(0, 100)
+
+        self.delete_json_check = QCheckBox("Удалить JSON-файлы после создания отчётов")
+        self.delete_json_check.setToolTip("После успешной генерации HTML-отчётов, JSON-файлы экспорта будут удалены.")
+
+        self.export_report_btn = QPushButton("Создать HTML-отчёты из .i64")
+        self.export_report_btn.setEnabled(False)
+        self.export_report_btn.setToolTip(
+            "Запустить IDAPython-скрипт экспорта данных на всех .i64 файлах "
+            "и создать интерактивные HTML-отчёты."
+        )
+
+        report_layout.addWidget(self.report_progress_label)
+        report_layout.addWidget(self.report_progress_bar)
+        report_layout.addWidget(self.delete_json_check)
+        report_layout.addWidget(self.export_report_btn, alignment=Qt.AlignLeft)
+        layout.addWidget(report_group)
+
         # Ошибки
         self.error_group = QGroupBox("Сообщения об ошибках")
         error_layout = QVBoxLayout(self.error_group)
@@ -321,22 +318,9 @@ class MainWindow(QMainWindow):
         self.error_group.setVisible(False)
         layout.addWidget(self.error_group)
 
-        # Кнопка создания отчётов
-        self.export_report_btn = QPushButton("Создать HTML-отчёты из .i64")
-        self.export_report_btn.setEnabled(False)
-        self.export_report_btn.setToolTip(
-            "Запустить IDAPython-скрипт экспорта данных на всех .i64 файлах "
-            "и создать интерактивные HTML-отчёты."
-        )
-        layout.addWidget(self.export_report_btn, alignment=Qt.AlignLeft)
-
         layout.addStretch()
-
         return page
 
-    # ------------------------------------------------------------------
-    # Сигналы и слоты
-    # ------------------------------------------------------------------
     def _connect_signals(self):
         self.btn_analysis.clicked.connect(lambda: self.switch_page(0))
         self.btn_settings.clicked.connect(lambda: self.switch_page(1))
@@ -433,7 +417,7 @@ class MainWindow(QMainWindow):
             self.current_file_label.setText("Отмена...")
 
     # ------------------------------------------------------------------
-    # Экспорт данных и создание отчётов
+    # Экспорт и генерация отчётов
     # ------------------------------------------------------------------
     def _export_and_generate_reports(self):
         input_dir = self.inputdir_edit.text().strip()
@@ -454,8 +438,8 @@ class MainWindow(QMainWindow):
         self.export_in_progress = True
         self.export_report_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
-        self.current_file_label.setText("Запуск экспорта данных...")
-        self.progress_bar.setValue(0)
+        self.report_progress_label.setText("Запуск экспорта данных...")
+        self.report_progress_bar.setValue(0)
         self.error_text.clear()
         self.error_group.setVisible(False)
 
@@ -471,38 +455,57 @@ class MainWindow(QMainWindow):
         self.export_worker.start()
 
     def _on_export_progress(self, filename: str, current: int, total: int):
-        self.current_file_label.setText(f"Экспорт: {current}/{total} – {filename}")
-        self.progress_bar.setValue(int(100 * current / total))
+        self.report_progress_label.setText(f"Экспорт: {current}/{total} – {filename}")
+        self.report_progress_bar.setValue(int(100 * current / total))
 
     def _on_export_finished(self, succeeded: int, total: int):
         results = self.export_worker.results if self.export_worker else {}
         generator = ReportGenerator()
-        first_report = True
+        delete_json = self.delete_json_check.isChecked()
+
+        # Создаём подпапку reports
+        input_dir = Path(self.inputdir_edit.text().strip())
+        reports_dir = input_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        generated_count = 0
         for idb_path, success in results.items():
-            if success:
-                json_path = idb_path.with_suffix(idb_path.suffix + ".export.json")
-                if json_path.exists():
-                    try:
-                        html_path = generator.generate_from_json(json_path)
-                        if first_report:
-                            webbrowser.open(html_path.as_uri())
-                            first_report = False
-                    except Exception as e:
-                        self._on_error(f"Ошибка генерации отчёта {idb_path.name}: {e}")
+            if not success:
+                continue
+
+            json_path = Path(str(idb_path) + ".export.json")
+            if not json_path.exists():
+                self._on_error(f"JSON не найден: {json_path}")
+                continue
+
+            try:
+                # Определяем имя исходного модуля из JSON
+                with open(json_path, "r", encoding="utf-8") as f:
+                    import json
+                    data = json.load(f)
+                # file_name в JSON — полный путь к исходному файлу (например, C:\...\7zG.exe)
+                original_file = Path(data["file_name"]).name  # 7zG.exe
+                html_name = original_file + ".html"
+                output_html = reports_dir / html_name
+
+                generator.generate_from_json(json_path, output_html)
+                generated_count += 1
+
+                if delete_json:
+                    json_path.unlink(missing_ok=True)
+            except Exception as e:
+                self._on_error(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
 
         self.export_in_progress = False
         self.export_report_btn.setEnabled(True)
         self.start_btn.setEnabled(True)
-        self.current_file_label.setText("Готово. Отчёты созданы.")
-        self.progress_bar.setValue(100)
-        if succeeded == total and total > 0:
-            QMessageBox.information(self, "Готово", "Экспорт и создание отчётов успешно завершены.")
+        self.report_progress_label.setText(f"Готово. Создано отчётов: {generated_count}")
+        self.report_progress_bar.setValue(100)
+        if generated_count == succeeded and total > 0:
+            QMessageBox.information(self, "Готово", f"Отчёты сохранены в {reports_dir}")
         else:
-            QMessageBox.warning(self, "Внимание", f"Успешно: {succeeded}/{total}.")
+            QMessageBox.warning(self, "Внимание", f"Успешных отчётов: {generated_count}/{succeeded}.")
 
-    # ------------------------------------------------------------------
-    # Смена конфигурации
-    # ------------------------------------------------------------------
     def _on_config_changed(self, new_config):
         self.cfg = new_config
         new_theme = new_config.get("theme", "light")

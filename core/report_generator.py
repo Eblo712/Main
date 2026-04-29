@@ -150,6 +150,7 @@ class ReportGenerator:
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
+        print(f"[ReportGenerator] Reading JSON: {json_path}")
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -161,5 +162,5 @@ class ReportGenerator:
         with open(output_html, "w", encoding="utf-8") as f:
             f.write(html)
 
-        logger.info(f"HTML-отчёт сохранён: {output_html}")
+        print(f"[ReportGenerator] HTML saved: {output_html}")
         return output_html
