@@ -1,4 +1,4 @@
-"""Генератор HTML-отчётов с детерминированной группировкой модулей по словарям."""
+"""Генератор HTML-отчётов с детерминированной группировкой модулей и описаниями."""
 import json
 import logging
 from pathlib import Path
@@ -272,6 +272,11 @@ INDEX_TEMPLATE = """
             margin: 0 0 8px 20px;
             font-style: italic;
         }
+        .module-description {
+            font-size: 11px;
+            color: #666;
+            margin-left: 8px;
+        }
     </style>
 </head>
 <body>
@@ -299,7 +304,7 @@ INDEX_TEMPLATE = """
                 {% endif %}
                 <ul>
                     {% for mod in category.modules %}
-                        <li>{{ mod }}</li>
+                        <li><strong>{{ mod.name }}</strong><span class="module-description">: {{ mod.desc }}</span></li>
                     {% endfor %}
                 </ul>
             {% endfor %}
@@ -386,25 +391,30 @@ class ReportGenerator:
                 "display_name": display_name,
             })
 
-        # Детерминированная группировка по словарям
+        # Детерминированная группировка по словарям с описанием модулей
         categories = {}
         for mod in unique_modules:
             cat, desc = get_module_category_and_description(mod)
             categories.setdefault(cat, {"description": desc, "modules": []})
-            categories[cat]["modules"].append(mod)
+            # Добавляем модуль с описанием из classify_module
+            categories[cat]["modules"].append({
+                "name": mod,
+                "desc": classify_module(mod)
+            })
 
         grouped_list = []
-        # Сортируем: сначала все категории, кроме "Неопознанные", потом неопознанные
         sorted_cats = sorted([c for c in categories if c != "Неопознанные модули"])
         if "Неопознанные модули" in categories:
             sorted_cats.append("Неопознанные модули")
 
         for cat in sorted_cats:
             info = categories[cat]
+            # Сортируем модули по имени (без учёта регистра)
+            info["modules"] = sorted(info["modules"], key=lambda x: x["name"].lower())
             grouped_list.append({
                 "name": cat,
                 "description": info["description"],
-                "modules": sorted(info["modules"], key=str.lower),
+                "modules": info["modules"],
                 "count": len(info["modules"]),
             })
 
