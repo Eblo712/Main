@@ -64,7 +64,7 @@ REPORT_TEMPLATE = """
             text-align: left; padding: 6px; border-bottom: 1px solid var(--border);
         }
         th { background: var(--hover); }
-        .hexdump {
+        .code-block {
             font-family: "Consolas", "Courier New", monospace;
             white-space: pre-wrap;
             background: #f0f0f5;
@@ -116,6 +116,43 @@ REPORT_TEMPLATE = """
         <input type="text" id="quickSearch" placeholder="Поиск по функциям, импортам, экспортам...">
     </div>
 
+{% if is_elf %}
+    <h2>Необходимые библиотеки (.so) <span class="badge">{{ needed_libs|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Список библиотек</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if needed_libs %}
+            <ul class="module-list searchable">
+                {% for lib in needed_libs %}
+                <li>{{ lib }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}<p>Не найдено необходимых библиотек.</p>{% endif %}
+        </div>
+    </div>
+
+    <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Таблица импортов</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            {% if imports %}
+            <table>
+                <tr><th>Имя</th><th>Адрес</th><th>Библиотека</th></tr>
+                {% for imp in imports %}
+                <tr class="searchable">
+                    <td>{{ imp.name }}</td><td>{{ imp.address }}</td><td>{{ imp.module }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            {% else %}<p>Нет импортируемых функций.</p>{% endif %}
+        </div>
+    </div>
+{% else %}
+    <!-- PE-режим: группировка по модулям -->
     <h2>Импортированные модули (опознанные) <span class="badge">{{ known_modules|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
@@ -150,22 +187,6 @@ REPORT_TEMPLATE = """
     </div>
     {% endif %}
 
-    {% if elf_sections %}
-    <h2>Секции ELF <span class="badge">{{ elf_sections|length }}</span></h2>
-    <div class="card">
-        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
-            <span>Обнаруженные секции</span><span>▾</span>
-        </div>
-        <div class="card-body">
-            <ul class="section-list searchable">
-                {% for sec in elf_sections %}
-                <li>{{ sec }}</li>
-                {% endfor %}
-            </ul>
-        </div>
-    </div>
-    {% endif %}
-
     <h2>Импортируемые функции <span class="badge">{{ imports|length }}</span></h2>
     <div class="card">
         <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
@@ -184,6 +205,7 @@ REPORT_TEMPLATE = """
             {% else %}<p>Нет импортируемых функций.</p>{% endif %}
         </div>
     </div>
+{% endif %}
 
     <h2>Экспортируемые функции <span class="badge">{{ exports|length }}</span></h2>
     <div class="card">
@@ -204,6 +226,22 @@ REPORT_TEMPLATE = """
         </div>
     </div>
 
+    {% if elf_sections %}
+    <h2>Секции ELF <span class="badge">{{ elf_sections|length }}</span></h2>
+    <div class="card">
+        <div class="card-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>Обнаруженные секции</span><span>▾</span>
+        </div>
+        <div class="card-body">
+            <ul class="section-list searchable">
+                {% for sec in elf_sections %}
+                <li>{{ sec }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
     <h2>Дизассемблированные функции <span class="badge">{{ functions|length }}</span></h2>
     {% for func in functions %}
     <div class="card">
@@ -213,18 +251,15 @@ REPORT_TEMPLATE = """
         </div>
         <div class="card-body">
             <strong>Hex-дамп:</strong>
-            <div class="hexdump">{{ func.hexdump }}</div>
+            <div class="code-block">{{ func.hexdump }}</div>
 
             <strong>Дизассемблирование:</strong>
-            <table>
-                <tr><th>Адрес</th><th>Инструкция</th></tr>
-                {% for insn in func.instructions %}
-                <tr class="searchable">
-                    <td>{{ insn.address }}</td>
-                    <td>{{ insn.instruction }}</td>
-                </tr>
-                {% endfor %}
-            </table>
+            <div class="code-block">{{ func.instructions_text }}</div>
+
+            {% if func.pseudocode %}
+            <strong>Псевдокод:</strong>
+            <div class="code-block">{{ func.pseudocode }}</div>
+            {% endif %}
         </div>
     </div>
     {% endfor %}
@@ -392,29 +427,37 @@ class ReportGenerator:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        known = []
-        unknown = []
-        elf = []
-        seen = set()
-        for imp in data.get("imports", []):
-            mod = imp.get("module")
-            if not mod or mod.lower() == "unknown":
-                continue
-            if mod in seen:
-                continue
-            seen.add(mod)
-            if mod.startswith("."):
-                elf.append(mod)
-                continue
-            category = classify_module(mod)
-            if "Неопознанный" in category:
-                unknown.append(mod)
-            else:
-                known.append(mod)
+        is_elf = data.get("is_elf", False)
 
-        data["known_modules"] = sorted(known)
-        data["unknown_modules"] = sorted(unknown)
-        data["elf_sections"] = sorted(elf)
+        # Для PE формируем списки опознанных/неопознанных модулей как раньше
+        if not is_elf:
+            known = []
+            unknown = []
+            elf = []
+            seen = set()
+            for imp in data.get("imports", []):
+                mod = imp.get("module")
+                if not mod or mod.lower() == "unknown":
+                    continue
+                if mod in seen:
+                    continue
+                seen.add(mod)
+                if mod.startswith("."):
+                    elf.append(mod)
+                    continue
+                category = classify_module(mod)
+                if "Неопознанный" in category:
+                    unknown.append(mod)
+                else:
+                    known.append(mod)
+
+            data["known_modules"] = sorted(known)
+            data["unknown_modules"] = sorted(unknown)
+            if "elf_sections" not in data:
+                data["elf_sections"] = sorted(elf)
+
+        if "elf_sections" not in data:
+            data["elf_sections"] = []
 
         if "exports" not in data:
             data["exports"] = []
@@ -447,7 +490,7 @@ class ReportGenerator:
         """
         Создаёт индексный файл index.html в reports_dir.
         :param reports: список словарей {'filename': относительный_путь, 'display_name': текст}
-        :param unique_modules: список имён модулей (НЕ секций)
+        :param unique_modules: список имён модулей (НЕ секций) – для ELF это имена .so библиотек
         :param elf_sections: список обнаруженных секций ELF
         """
         # Кодируем пробелы в ссылках
