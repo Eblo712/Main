@@ -10,7 +10,6 @@ def main():
     app = QApplication(sys.argv)
     # В Qt6 high-DPI масштабирование работает автоматически, дополнительные настройки не нужны.
     window = MainWindow()
-    print("test")
     window.show()
     sys.exit(app.exec())
 
