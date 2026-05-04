@@ -4,11 +4,11 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QProgressBar, QTextEdit, QGroupBox,
     QFileDialog, QStackedWidget, QMessageBox, QApplication, QLineEdit,
     QFormLayout, QSlider, QRadioButton, QButtonGroup, QGridLayout,
-    QCheckBox, QFrame, QWhatsThis, QStyle
+    QCheckBox, QFrame, QWhatsThis, QStyle, QProgressDialog
 )
 from PySide6.QtCore import Qt, QPoint, QThread, Signal
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import os
 import json
 import shutil
@@ -63,6 +63,39 @@ class ExportWorker(QThread):
         self._cancel = True
 
 
+class IndexWorker(QThread):
+    finished = Signal(bool)
+    error_occurred = Signal(str)
+
+    def __init__(self, generator: ReportGenerator, reports_dir: Path,
+                 input_dir: Path, report_links: List[dict],
+                 sorted_modules: List[str], ida_info: Optional[dict],
+                 elf_sections: List[str] = None, parent=None):
+        super().__init__(parent)
+        self.generator = generator
+        self.reports_dir = reports_dir
+        self.input_dir = input_dir
+        self.report_links = report_links
+        self.sorted_modules = sorted_modules
+        self.ida_info = ida_info
+        self.elf_sections = elf_sections or []
+
+    def run(self):
+        try:
+            self.generator.generate_index(
+                self.reports_dir,
+                self.input_dir,
+                self.report_links,
+                self.sorted_modules,
+                self.ida_info,
+                self.elf_sections
+            )
+            self.finished.emit(True)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+            self.finished.emit(False)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -74,15 +107,22 @@ class MainWindow(QMainWindow):
         self.export_in_progress = False
         self.worker = None
         self.export_worker = None
-        self.active_page = 0  # 0 = анализ, 1 = конфигурация
+        self.active_page = 0
+        self._cached_files: List[Path] = []
+
+        # Переменные для хранения состояния между этапами
+        self._pending_ida_reports: Optional[Path] = None
+        self._pending_generated_count: int = 0
+        self._pending_succeeded: int = 0
+        self._pending_total: int = 0
 
         self._build_ui()
         self._connect_signals()
         apply_theme(QApplication.instance(), self.current_theme)
-        # Принудительно фиксируем состояние кнопок после глобальной темы
         self.btn_analysis.setChecked(True)
         self.btn_settings.setChecked(False)
         self._update_menu_styles()
+        self._refresh_file_list()
 
     def _update_menu_styles(self):
         self.btn_analysis.setStyleSheet(self._menu_button_style(self.btn_analysis.isChecked(), self.current_theme))
@@ -202,7 +242,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # --- Источник файлов (на всю ширину) ---
+        # --- Источник файлов ---
         source_group = QGroupBox("Источник файлов")
         source_layout = QVBoxLayout(source_group)
         dir_row = QHBoxLayout()
@@ -218,7 +258,7 @@ class MainWindow(QMainWindow):
         source_layout.addLayout(dir_row)
         layout.addWidget(source_group)
 
-        # --- Две колонки под источником (одинаковой ширины) ---
+        # --- Две колонки ---
         columns_layout = QHBoxLayout()
         columns_layout.setSpacing(20)
 
@@ -284,7 +324,6 @@ class MainWindow(QMainWindow):
         flags_layout.addWidget(self.verbose_check)
         scan_layout.addWidget(flags_group)
 
-        # Кнопки запуска/отмены
         buttons_layout = QHBoxLayout()
         self.start_btn = QPushButton("Запустить анализ")
         self.start_btn.setFixedHeight(40)
@@ -302,7 +341,6 @@ class MainWindow(QMainWindow):
         right_column.setSpacing(10)
         right_column.setContentsMargins(0, 0, 0, 0)
 
-        # Прогресс анализа (включает поле ошибок)
         progress_group = QGroupBox("Прогресс анализа")
         progress_layout = QVBoxLayout(progress_group)
         self.current_file_label = QLabel("Готов к запуску")
@@ -321,7 +359,6 @@ class MainWindow(QMainWindow):
 
         right_column.addWidget(progress_group)
 
-        # Параметры отчёта
         report_group = QGroupBox("Параметры отчёта")
         report_layout = QVBoxLayout(report_group)
 
@@ -330,7 +367,10 @@ class MainWindow(QMainWindow):
         self.report_progress_bar.setRange(0, 100)
 
         self.delete_json_check = QCheckBox("Удалить JSON-файлы после создания отчётов")
-        self.delete_json_check.setToolTip("После успешной генерации HTML-отчётов, JSON-файлы экспорта будут удалены.")
+        self.delete_json_check.setToolTip(
+            "После успешной генерации HTML-отчётов, JSON-файлы экспорта будут удалены."
+        )
+        self.delete_json_check.setChecked(True)
 
         self.export_report_btn = QPushButton("Создать HTML-отчёты из .i64")
         self.export_report_btn.setEnabled(False)
@@ -374,6 +414,7 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Выберите папку для анализа")
         if path:
             self.inputdir_edit.setText(path)
+            self._refresh_file_list()
 
     def _selected_extensions(self):
         checked = self.platform_buttons.checkedButton()
@@ -381,6 +422,46 @@ class MainWindow(QMainWindow):
             return PLATFORM_EXTENSIONS[self.radio_to_platform[checked]]["exts"]
         return PLATFORM_EXTENSIONS["All platforms"]["exts"]
 
+    # ------------------------------------------------------------------
+    # Проверка существующих .i64 и управление состоянием
+    # ------------------------------------------------------------------
+    def _refresh_file_list(self):
+        input_dir = self.inputdir_edit.text().strip()
+        if not input_dir or not os.path.isdir(input_dir):
+            self._cached_files = []
+            self.files_found_label.setText("")
+            self.export_report_btn.setEnabled(False)
+            return
+
+        extensions = self._selected_extensions()
+        files = find_executables(input_dir, extensions=extensions)
+        self._cached_files = files
+        if not files:
+            self.files_found_label.setText("Не найдено подходящих файлов.")
+            self.export_report_btn.setEnabled(False)
+            return
+
+        existing_all = self._all_idbs_exist(files)
+        count = len(files)
+        if existing_all:
+            self.files_found_label.setText(f"Найдено {count} исполняемых файлов (для всех уже есть .i64)")
+        else:
+            self.files_found_label.setText(f"Найдено {count} исполняемых файлов (не для всех есть .i64)")
+
+        any_idb = any(self._get_expected_idb_path(f).exists() for f in files)
+        self.export_report_btn.setEnabled(any_idb)
+
+    def _get_expected_idb_path(self, file_path: Path) -> Path:
+        arch = IDAAnalyzer()._detect_arch(file_path)
+        ext = ".idb" if arch == 32 else ".i64"
+        return file_path.parent / (file_path.name + ext)
+
+    def _all_idbs_exist(self, files: List[Path]) -> bool:
+        return all(self._get_expected_idb_path(f).exists() for f in files)
+
+    # ------------------------------------------------------------------
+    # Запуск анализа
+    # ------------------------------------------------------------------
     def _start_analysis(self):
         idat_path = get_ida_executable()
         if not shutil.which(idat_path):
@@ -388,7 +469,8 @@ class MainWindow(QMainWindow):
                 self,
                 "Утилита IDA не найдена",
                 f"Исполняемый файл '{idat_path}' не найден в системном PATH.\n\n"
-                "Пожалуйста, проверьте путь к idat.exe в разделе «Конфигурация» или добавьте папку с IDA в переменную PATH."
+                "Пожалуйста, проверьте путь к idat.exe в разделе «Конфигурация» или "
+                "добавьте папку с IDA в переменную PATH."
             )
             return
 
@@ -401,12 +483,27 @@ class MainWindow(QMainWindow):
             return
 
         extensions = self._selected_extensions()
-        max_workers = self.max_ida_slider.value()
-
         files = find_executables(input_dir, extensions=extensions)
         if not files:
             QMessageBox.information(self, "Информация", "Не найдено подходящих файлов.")
             return
+
+        if self._all_idbs_exist(files):
+            reply = QMessageBox.question(
+                self,
+                "Базы данных уже существуют",
+                "Для всех найденных исполняемых файлов уже существуют .i64 базы.\n"
+                "Хотите сразу создать HTML-отчёты без повторного анализа?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self._export_and_generate_reports()
+                return
+            elif reply == QMessageBox.No:
+                pass
+            else:
+                return
 
         self.files_found_label.setText(f"Найдено {len(files)} исполняемых файлов")
 
@@ -419,8 +516,8 @@ class MainWindow(QMainWindow):
         self.error_text.clear()
 
         self.worker = AnalysisWorker(
-            files, idat_path, max_workers,
-            output_dir=Path(input_dir),
+            files, idat_path, max_workers := self.max_ida_slider.value(),
+            output_dir=None,
             cleanup=self.cleanup_check.isChecked(),
             temp_cleanup=self.temp_cleanup_check.isChecked(),
             verbose=self.verbose_check.isChecked()
@@ -448,6 +545,7 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.deleteLater()
             self.worker = None
+        self._refresh_file_list()
 
     def _cancel_analysis(self):
         if self.worker:
@@ -463,7 +561,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Папка не найдена.")
             return
 
-        idb_files = list(Path(input_dir).glob("*.i64")) + list(Path(input_dir).glob("*.idb"))
+        idb_files = list(Path(input_dir).rglob("*.i64")) + list(Path(input_dir).rglob("*.idb"))
         if not idb_files:
             QMessageBox.information(self, "Информация", "В папке нет файлов .i64 или .idb.")
             return
@@ -501,11 +599,12 @@ class MainWindow(QMainWindow):
         delete_json = self.delete_json_check.isChecked()
 
         input_dir = Path(self.inputdir_edit.text().strip())
-        reports_dir = input_dir / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
+        ida_reports = input_dir.parent / "IDAReports"
+        ida_reports.mkdir(parents=True, exist_ok=True)
 
-        generated_html_files = []
+        report_links = []
         global_modules_set = set()
+        global_elf_set = set()
         ida_info = None
 
         generated_count = 0
@@ -527,15 +626,30 @@ class MainWindow(QMainWindow):
 
                 for imp in data.get("imports", []):
                     mod = imp.get("module")
-                    if mod and mod.lower() != "unknown":
+                    if not mod or mod.lower() == "unknown":
+                        continue
+                    if mod.startswith("."):
+                        global_elf_set.add(mod)
+                    else:
                         global_modules_set.add(mod)
 
                 original_file = Path(data["file_name"]).name
-                html_name = original_file + ".html"
-                output_html = reports_dir / html_name
+                source_full = Path(data["file_name"])
+                if not source_full.is_absolute():
+                    source_full = Path(input_dir, source_full)
+                try:
+                    rel = source_full.relative_to(input_dir)
+                except ValueError:
+                    rel = Path(original_file)
+                out_rel = rel.with_suffix(rel.suffix + ".html")
+                output_html = ida_reports / out_rel
+                output_html.parent.mkdir(parents=True, exist_ok=True)
 
-                generator.generate_from_json(json_path, output_html)
-                generated_html_files.append(output_html)
+                generator.generate_from_json(json_path, output_html, reports_dir=ida_reports)
+
+                link = out_rel.as_posix()
+                display = rel.as_posix()
+                report_links.append({"filename": link, "display_name": display})
                 generated_count += 1
 
                 if delete_json:
@@ -543,38 +657,82 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._on_error(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
 
-        # Удаляем временные файлы экспорта (исправлено имя лога)
+        # Очистка временных файлов
         for idb_path, success in results.items():
             if not success:
                 continue
             out_dir = idb_path.parent
-            # Правильное имя: stem файла (например, 7z.exe) + "_script.log"
             script_log = out_dir / (idb_path.stem + "_script.log")
             self._safe_clean_file(script_log, "script log")
             for temp_pat in ["*.id0", "*.id1", "*.nam", "*.til"]:
                 for temp_file in out_dir.glob(temp_pat):
                     self._safe_clean_file(temp_file, temp_pat[1:])
 
-        if generated_html_files:
-            try:
-                sorted_modules = sorted(global_modules_set)
-                generator.generate_index(
-                    reports_dir,
-                    input_dir,
-                    generated_html_files,
-                    sorted_modules,
-                    ida_info
-                )
-            except Exception as e:
-                self._on_error(f"Ошибка создания сводного отчёта: {e}")
+        # Сохраняем параметры для финального сообщения
+        self._pending_ida_reports = ida_reports
+        self._pending_generated_count = generated_count
+        self._pending_succeeded = succeeded
+        self._pending_total = total
 
+        if report_links:
+            sorted_modules = sorted(global_modules_set)
+            sorted_elf = sorted(global_elf_set)
+
+            # Создаём диалог со спиннером и сохраняем ссылку на него
+            progress = QProgressDialog(
+                "Формирование сводного отчёта...\nПожалуйста, подождите",
+                None, 0, 0, self
+            )
+            progress.setWindowTitle("Создание index.html")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+            progress.show()
+            QApplication.processEvents()
+
+            # Запускаем IndexWorker
+            self.index_worker = IndexWorker(
+                generator, ida_reports, input_dir,
+                report_links, sorted_modules, ida_info,
+                sorted_elf
+            )
+            # По завершении индексации вызовем _on_index_finished
+            self.index_worker.finished.connect(
+                lambda success: self._on_index_finished(success, progress)
+            )
+            self.index_worker.error_occurred.connect(
+                lambda err: self._on_error(f"Ошибка создания сводного отчёта: {err}")
+            )
+            self.index_worker.start()
+        else:
+            # Если отчётов нет – сразу показываем сообщение
+            self._show_final_message()
+
+    def _on_index_finished(self, success: bool, progress_dialog: QProgressDialog):
+        """Вызывается после завершения IndexWorker."""
+        # Закрываем диалог
+        progress_dialog.close()
+        # Показываем итоговое сообщение
+        self._show_final_message()
+
+    def _show_final_message(self):
+        """Показывает сообщение о завершении создания отчётов."""
         self.export_in_progress = False
         self.export_report_btn.setEnabled(True)
         self.start_btn.setEnabled(True)
+        ida_reports = self._pending_ida_reports
+        generated_count = self._pending_generated_count
+        succeeded = self._pending_succeeded
+        total = self._pending_total
+
+        if ida_reports is None:
+            return
+
         self.report_progress_label.setText(f"Готово. Создано отчётов: {generated_count}")
         self.report_progress_bar.setValue(100)
         if generated_count == succeeded and total > 0:
-            QMessageBox.information(self, "Готово", f"Отчёты сохранены в {reports_dir}")
+            QMessageBox.information(self, "Готово", f"Отчёты сохранены в {ida_reports}")
         else:
             QMessageBox.warning(self, "Внимание", f"Успешных отчётов: {generated_count}/{succeeded}.")
 
