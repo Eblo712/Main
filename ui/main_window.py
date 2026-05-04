@@ -4,15 +4,17 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QProgressBar, QTextEdit, QGroupBox,
     QFileDialog, QStackedWidget, QMessageBox, QApplication, QLineEdit,
     QFormLayout, QSlider, QRadioButton, QButtonGroup, QGridLayout,
-    QCheckBox, QFrame, QWhatsThis, QStyle
+    QCheckBox, QFrame, QWhatsThis, QStyle, QProgressDialog
 )
-from PySide6.QtCore import Qt, QPoint, QThread, Signal
+from PySide6.QtCore import Qt, QPoint, QThread, Signal, QRectF
+from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import os
 import json
 import shutil
 import time
+import squarify
 
 from ui.worker_threads import AnalysisWorker
 from ui.settings_dialog import SettingsPage
@@ -28,6 +30,8 @@ PLATFORM_EXTENSIONS = {
     "macOS / iOS": {"label": "macOS / iOS", "exts": [".mach-o", ".dylib", ".bundle", ".app"]},
     "All platforms": {"label": "Все платформы", "exts": [".exe", ".dll", ".sys", ".elf", ".so", ".o", ".mach-o", ".dylib", ".dex"]},
 }
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 class ExportWorker(QThread):
     progress_updated = Signal(str, int, int)
@@ -63,6 +67,138 @@ class ExportWorker(QThread):
         self._cancel = True
 
 
+class IndexWorker(QThread):
+    finished = Signal(bool)
+    error_occurred = Signal(str)
+
+    def __init__(self, generator: ReportGenerator, reports_dir: Path,
+                 input_dir: Path, report_links: List[dict],
+                 sorted_modules: List[str], ida_info: Optional[dict],
+                 elf_sections: List[str] = None, parent=None):
+        super().__init__(parent)
+        self.generator = generator
+        self.reports_dir = reports_dir
+        self.input_dir = input_dir
+        self.report_links = report_links
+        self.sorted_modules = sorted_modules
+        self.ida_info = ida_info
+        self.elf_sections = elf_sections or []
+
+    def run(self):
+        try:
+            self.generator.generate_index(
+                self.reports_dir,
+                self.input_dir,
+                self.report_links,
+                self.sorted_modules,
+                self.ida_info,
+                self.elf_sections
+            )
+            self.finished.emit(True)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+            self.finished.emit(False)
+
+
+class TreemapWidget(QWidget):
+    """Виджет для отображения treemap файлов."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.file_items = []          # список словарей: name, size, status, path
+        self.rects = []
+        self.hovered_index = -1
+        self._data_pending = False
+        self.setMouseTracking(True)
+        self.setMinimumHeight(120)
+
+    def set_data(self, items):
+        self.file_items = items
+        if self.width() > 0 and self.height() > 0:
+            self._compute_layout()
+        else:
+            self._data_pending = True
+        self.update()
+
+    def update_status(self, file_path: str, status: str):
+        for item in self.file_items:
+            if item['path'] == file_path:
+                item['status'] = status
+                break
+        self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._data_pending:
+            self._compute_layout()
+            self._data_pending = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.file_items:
+            self._compute_layout()
+            self.update()
+
+    def _compute_layout(self):
+        if not self.file_items:
+            self.rects = []
+            return
+        sizes = [max(item['size'], 1) for item in self.file_items]
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            self.rects = []
+            return
+        norm = squarify.normalize_sizes(sizes, w, h)
+        coords = squarify.squarify(norm, 0, 0, w, h)
+        # squarify возвращает список словарей {'x': ..., 'y': ..., 'dx': ..., 'dy': ...}
+        self.rects = [QRectF(d['x'], d['y'], d['dx'], d['dy']) for d in coords]
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if not self.file_items or not self.rects:
+            painter.drawText(self.rect(), Qt.AlignCenter, "Нет данных для отображения")
+            return
+        for i, rect in enumerate(self.rects):
+            if i >= len(self.file_items):
+                break
+            item = self.file_items[i]
+            color = self._color_for_status(item.get('status', 'not_analyzed'))
+            painter.fillRect(rect, color)
+            painter.setPen(QPen(Qt.black, 1))
+            painter.drawRect(rect)
+            painter.setFont(QFont("Segoe UI", 7))
+            painter.drawText(rect.adjusted(2, 2, -2, -2), Qt.AlignCenter | Qt.TextWordWrap, item['name'][:20])
+        if 0 <= self.hovered_index < len(self.rects) and self.hovered_index < len(self.file_items):
+            painter.setPen(QPen(Qt.white, 2))
+            painter.drawRect(self.rects[self.hovered_index])
+
+    def _color_for_status(self, status):
+        colors = {
+            'not_analyzed': QColor(192, 192, 192),
+            'in_progress': QColor(255, 255, 0),
+            'success': QColor(0, 200, 0),
+            'error': QColor(255, 0, 0)
+        }
+        return colors.get(status, QColor(128, 128, 128))
+
+    def mouseMoveEvent(self, event):
+        pos = event.position()
+        new_index = -1
+        for i, rect in enumerate(self.rects):
+            if rect.contains(pos):
+                new_index = i
+                break
+        if new_index != self.hovered_index:
+            self.hovered_index = new_index
+            self.update()
+            if new_index >= 0 and new_index < len(self.file_items):
+                item = self.file_items[new_index]
+                tip = f"{item['name']}\nРазмер: {item['size']} байт\nСтатус: {item.get('status', 'неизвестно')}"
+            else:
+                tip = ""
+            self.setToolTip(tip)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -72,17 +208,24 @@ class MainWindow(QMainWindow):
         self.current_theme = self.cfg.get("theme", "light")
         self.analysis_in_progress = False
         self.export_in_progress = False
+        self.html_in_progress = False
         self.worker = None
         self.export_worker = None
-        self.active_page = 0  # 0 = анализ, 1 = конфигурация
+        self.index_worker = None
+        self.active_page = 0
+        self._cached_files: List[Path] = []
+
+        self._export_results = {}
+        self._export_succeeded = 0
+        self._export_total = 0
 
         self._build_ui()
         self._connect_signals()
         apply_theme(QApplication.instance(), self.current_theme)
-        # Принудительно фиксируем состояние кнопок после глобальной темы
         self.btn_analysis.setChecked(True)
         self.btn_settings.setChecked(False)
         self._update_menu_styles()
+        self._refresh_file_list()
 
     def _update_menu_styles(self):
         self.btn_analysis.setStyleSheet(self._menu_button_style(self.btn_analysis.isChecked(), self.current_theme))
@@ -294,61 +437,87 @@ class MainWindow(QMainWindow):
         buttons_layout.addWidget(self.cancel_btn)
         scan_layout.addLayout(buttons_layout)
 
+        # Обработка результатов IDA
+        json_group = QGroupBox("Обработка результатов IDA")
+        json_layout = QVBoxLayout(json_group)
+
+        self.json_export_label = QLabel("Готов к экспорту JSON")
+        self.json_progress_bar = QProgressBar()
+        self.json_progress_bar.setRange(0, 100)
+
+        self.json_export_btn = QPushButton("IDAtoJSON")
+        self.json_export_btn.setEnabled(False)
+        self.json_export_btn.setToolTip("Запустить экспорт данных из .i64 в JSON.")
+
+        json_layout.addWidget(self.json_export_label)
+        json_layout.addWidget(self.json_progress_bar)
+        json_layout.addWidget(self.json_export_btn, alignment=Qt.AlignLeft)
+
         left_column.addWidget(scan_group)
+        left_column.addWidget(json_group)
         left_column.addStretch()
 
-        # Правая колонка
+        # --- Правая колонка (переработана) ---
         right_column = QVBoxLayout()
         right_column.setSpacing(10)
         right_column.setContentsMargins(0, 0, 0, 0)
 
-        # Прогресс анализа (включает поле ошибок)
-        progress_group = QGroupBox("Прогресс анализа")
-        progress_layout = QVBoxLayout(progress_group)
+        # Прогресс анализа (компактный)
         self.current_file_label = QLabel("Готов к запуску")
         self.files_found_label = QLabel("")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        progress_layout.addWidget(self.current_file_label)
-        progress_layout.addWidget(self.files_found_label)
-        progress_layout.addWidget(self.progress_bar)
+        right_column.addWidget(self.current_file_label)
+        right_column.addWidget(self.files_found_label)
+        right_column.addWidget(self.progress_bar)
 
+        # Treemap
+        self.treemap = TreemapWidget()
+        self.treemap.setMinimumHeight(150)
+        right_column.addWidget(self.treemap, 1)  # растягивается
+
+        # Поле ошибок
         self.error_text = QTextEdit()
         self.error_text.setReadOnly(True)
         self.error_text.setMaximumHeight(120)
         self.error_text.setPlaceholderText("Здесь будут появляться сообщения об ошибках...")
-        progress_layout.addWidget(self.error_text)
-
-        right_column.addWidget(progress_group)
-
-        # Параметры отчёта
-        report_group = QGroupBox("Параметры отчёта")
-        report_layout = QVBoxLayout(report_group)
-
-        self.report_progress_label = QLabel("Готов к созданию отчётов")
-        self.report_progress_bar = QProgressBar()
-        self.report_progress_bar.setRange(0, 100)
-
-        self.delete_json_check = QCheckBox("Удалить JSON-файлы после создания отчётов")
-        self.delete_json_check.setToolTip("После успешной генерации HTML-отчётов, JSON-файлы экспорта будут удалены.")
-
-        self.export_report_btn = QPushButton("Создать HTML-отчёты из .i64")
-        self.export_report_btn.setEnabled(False)
-        self.export_report_btn.setToolTip(
-            "Запустить IDAPython-скрипт экспорта данных на всех .i64 файлах "
-            "и создать интерактивные HTML-отчёты."
-        )
-
-        report_layout.addWidget(self.report_progress_label)
-        report_layout.addWidget(self.report_progress_bar)
-        report_layout.addWidget(self.delete_json_check)
-        report_layout.addWidget(self.export_report_btn, alignment=Qt.AlignLeft)
-        right_column.addWidget(report_group)
-        right_column.addStretch()
+        right_column.addWidget(self.error_text)
 
         columns_layout.addLayout(left_column, 1)
         columns_layout.addLayout(right_column, 1)
         layout.addLayout(columns_layout)
+
+        # --- HTML-отчёт (на всю ширину) ---
+        html_group = QGroupBox("HTML-отчёт")
+        html_layout = QVBoxLayout(html_group)
+
+        self.html_progress_label = QLabel("Готов к созданию HTML")
+        self.html_progress_bar = QProgressBar()
+        self.html_progress_bar.setRange(0, 100)
+
+        self.html_spinner = QProgressBar()
+        self.html_spinner.setRange(0, 0)
+        self.html_spinner.setVisible(False)
+
+        self.delete_json_check = QCheckBox("Удалить JSON-файлы после создания отчётов")
+        self.delete_json_check.setToolTip("После успешной генерации HTML-отчётов и сводного индекса, JSON-файлы экспорта будут удалены.")
+        self.delete_json_check.setChecked(True)
+
+        self.pseudocode_check = QCheckBox("Включить псевдокод в отчёт")
+        self.pseudocode_check.setToolTip("Если включено, для каждой функции будет добавлен псевдокод. Это замедляет экспорт.")
+        self.pseudocode_check.setChecked(False)
+
+        self.html_generate_btn = QPushButton("Сгенерировать HTML-отчёты")
+        self.html_generate_btn.setEnabled(False)
+        self.html_generate_btn.setToolTip("Создать интерактивные HTML-отчёты на основе JSON-файлов.")
+
+        html_layout.addWidget(self.html_progress_label)
+        html_layout.addWidget(self.html_progress_bar)
+        html_layout.addWidget(self.html_spinner)
+        html_layout.addWidget(self.delete_json_check)
+        html_layout.addWidget(self.pseudocode_check)
+        html_layout.addWidget(self.html_generate_btn, alignment=Qt.AlignLeft)
+        layout.addWidget(html_group)
 
         layout.addStretch()
         return page
@@ -359,7 +528,8 @@ class MainWindow(QMainWindow):
         self.browse_dir_btn.clicked.connect(self._browse_input_dir)
         self.start_btn.clicked.connect(self._start_analysis)
         self.cancel_btn.clicked.connect(self._cancel_analysis)
-        self.export_report_btn.clicked.connect(self._export_and_generate_reports)
+        self.json_export_btn.clicked.connect(self._start_json_export)
+        self.html_generate_btn.clicked.connect(self._start_html_generation)
 
     def switch_page(self, index: int):
         if self.analysis_in_progress and index != 0:
@@ -374,6 +544,7 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Выберите папку для анализа")
         if path:
             self.inputdir_edit.setText(path)
+            self._refresh_file_list()
 
     def _selected_extensions(self):
         checked = self.platform_buttons.checkedButton()
@@ -381,6 +552,61 @@ class MainWindow(QMainWindow):
             return PLATFORM_EXTENSIONS[self.radio_to_platform[checked]]["exts"]
         return PLATFORM_EXTENSIONS["All platforms"]["exts"]
 
+    # ------------------------------------------------------------------
+    # Проверка существующих .i64 и управление состоянием
+    # ------------------------------------------------------------------
+    def _refresh_file_list(self):
+        input_dir = self.inputdir_edit.text().strip()
+        if not input_dir or not os.path.isdir(input_dir):
+            self._cached_files = []
+            self.files_found_label.setText("")
+            self.json_export_btn.setEnabled(False)
+            self.html_generate_btn.setEnabled(False)
+            self.treemap.set_data([])
+            return
+
+        extensions = self._selected_extensions()
+        files = find_executables(input_dir, extensions=extensions)
+        self._cached_files = files
+        if not files:
+            self.files_found_label.setText("Не найдено подходящих файлов.")
+            self.json_export_btn.setEnabled(False)
+            self.html_generate_btn.setEnabled(False)
+            self.treemap.set_data([])
+            return
+
+        existing_all = self._all_idbs_exist(files)
+        count = len(files)
+        if existing_all:
+            self.files_found_label.setText(f"Найдено {count} исполняемых файлов (для всех уже есть .i64)")
+        else:
+            self.files_found_label.setText(f"Найдено {count} исполняемых файлов (не для всех есть .i64)")
+
+        any_idb = any(self._get_expected_idb_path(f).exists() for f in files)
+        self.json_export_btn.setEnabled(any_idb)
+        self.html_generate_btn.setEnabled(False)
+
+        # Обновляем treemap
+        items = []
+        for f in files:
+            size = f.stat().st_size if f.exists() else 0
+            status = 'not_analyzed'
+            if self._get_expected_idb_path(f).exists():
+                status = 'success'
+            items.append({'name': f.name, 'size': size, 'status': status, 'path': str(f)})
+        self.treemap.set_data(items)
+
+    def _get_expected_idb_path(self, file_path: Path) -> Path:
+        arch = IDAAnalyzer()._detect_arch(file_path)
+        ext = ".idb" if arch == 32 else ".i64"
+        return file_path.parent / (file_path.name + ext)
+
+    def _all_idbs_exist(self, files: List[Path]) -> bool:
+        return all(self._get_expected_idb_path(f).exists() for f in files)
+
+    # ------------------------------------------------------------------
+    # Запуск анализа
+    # ------------------------------------------------------------------
     def _start_analysis(self):
         idat_path = get_ida_executable()
         if not shutil.which(idat_path):
@@ -388,7 +614,8 @@ class MainWindow(QMainWindow):
                 self,
                 "Утилита IDA не найдена",
                 f"Исполняемый файл '{idat_path}' не найден в системном PATH.\n\n"
-                "Пожалуйста, проверьте путь к idat.exe в разделе «Конфигурация» или добавьте папку с IDA в переменную PATH."
+                "Пожалуйста, проверьте путь к idat.exe в разделе «Конфигурация» или "
+                "добавьте папку с IDA в переменную PATH."
             )
             return
 
@@ -401,38 +628,68 @@ class MainWindow(QMainWindow):
             return
 
         extensions = self._selected_extensions()
-        max_workers = self.max_ida_slider.value()
-
         files = find_executables(input_dir, extensions=extensions)
         if not files:
             QMessageBox.information(self, "Информация", "Не найдено подходящих файлов.")
             return
+
+        if self._all_idbs_exist(files):
+            reply = QMessageBox.question(
+                self,
+                "Базы данных уже существуют",
+                "Для всех найденных исполняемых файлов уже существуют .i64 базы.\n"
+                "Хотите сразу создать JSON для последующей обработки?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self._start_json_export()
+                return
 
         self.files_found_label.setText(f"Найдено {len(files)} исполняемых файлов")
 
         self.analysis_in_progress = True
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
-        self.export_report_btn.setEnabled(False)
+        self.json_export_btn.setEnabled(False)
+        self.html_generate_btn.setEnabled(False)
         self.current_file_label.setText("Запуск...")
         self.progress_bar.setValue(0)
         self.error_text.clear()
 
         self.worker = AnalysisWorker(
-            files, idat_path, max_workers,
-            output_dir=Path(input_dir),
+            files, idat_path, self.max_ida_slider.value(),
+            output_dir=None,
             cleanup=self.cleanup_check.isChecked(),
             temp_cleanup=self.temp_cleanup_check.isChecked(),
             verbose=self.verbose_check.isChecked()
         )
         self.worker.progress_updated.connect(self._on_progress)
+        self.worker.file_started.connect(self._on_file_started)      # новинка
+        self.worker.file_completed.connect(self._on_file_completed)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.analysis_finished.connect(self._on_finished)
         self.worker.start()
 
+    def _on_file_started(self, filename: str):
+        if not filename:
+            return
+        for f in self._cached_files:
+            if f.name == filename:
+                self.treemap.update_status(str(f), 'in_progress')
+                break
+
     def _on_progress(self, filename: str, current: int, total: int):
         self.current_file_label.setText(f"Анализ файла {current} из {total}: {filename}")
         self.progress_bar.setValue(int(100 * current / total))
+
+    def _on_file_completed(self, filename: str, success: bool):
+        if not filename:
+            return
+        for f in self._cached_files:
+            if f.name == filename:
+                self.treemap.update_status(str(f), 'success' if success else 'error')
+                break
 
     def _on_error(self, message: str):
         self.error_text.append(message)
@@ -441,13 +698,15 @@ class MainWindow(QMainWindow):
         self.analysis_in_progress = False
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.export_report_btn.setEnabled(True)
+        self.json_export_btn.setEnabled(True)
+        self.html_generate_btn.setEnabled(False)
         failed = total - succeeded
         self.current_file_label.setText(f"Завершено. Успешно: {succeeded}, с ошибкой: {failed}")
         self.progress_bar.setValue(100)
         if self.worker:
             self.worker.deleteLater()
             self.worker = None
+        self._refresh_file_list()
 
     def _cancel_analysis(self):
         if self.worker:
@@ -455,15 +714,15 @@ class MainWindow(QMainWindow):
             self.current_file_label.setText("Отмена...")
 
     # ------------------------------------------------------------------
-    # Экспорт и генерация отчётов
+    # Экспорт в JSON
     # ------------------------------------------------------------------
-    def _export_and_generate_reports(self):
+    def _start_json_export(self):
         input_dir = self.inputdir_edit.text().strip()
         if not os.path.isdir(input_dir):
             QMessageBox.warning(self, "Ошибка", "Папка не найдена.")
             return
 
-        idb_files = list(Path(input_dir).glob("*.i64")) + list(Path(input_dir).glob("*.idb"))
+        idb_files = list(Path(input_dir).rglob("*.i64")) + list(Path(input_dir).rglob("*.idb"))
         if not idb_files:
             QMessageBox.information(self, "Информация", "В папке нет файлов .i64 или .idb.")
             return
@@ -473,11 +732,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Скрипт не найден: {script_path}")
             return
 
+        if self.pseudocode_check.isChecked():
+            os.environ['IDA_PSEUDOCODE'] = '1'
+        else:
+            os.environ.pop('IDA_PSEUDOCODE', None)
+
         self.export_in_progress = True
-        self.export_report_btn.setEnabled(False)
-        self.start_btn.setEnabled(False)
-        self.report_progress_label.setText("Запуск экспорта данных...")
-        self.report_progress_bar.setValue(0)
+        self.json_export_btn.setEnabled(False)
+        self.html_generate_btn.setEnabled(False)
+        self.json_export_label.setText("Запуск экспорта JSON...")
+        self.json_progress_bar.setValue(0)
         self.error_text.clear()
 
         max_workers = self.max_ida_slider.value()
@@ -486,97 +750,94 @@ class MainWindow(QMainWindow):
         self.export_worker = ExportWorker(
             idb_files, script_path, idat_path, max_workers
         )
-        self.export_worker.progress_updated.connect(self._on_export_progress)
+        self.export_worker.progress_updated.connect(self._on_json_export_progress)
         self.export_worker.error_occurred.connect(self._on_error)
-        self.export_worker.finished.connect(self._on_export_finished)
+        self.export_worker.finished.connect(self._on_json_export_finished)
         self.export_worker.start()
 
-    def _on_export_progress(self, filename: str, current: int, total: int):
-        self.report_progress_label.setText(f"Экспорт: {current}/{total} – {filename}")
-        self.report_progress_bar.setValue(int(100 * current / total))
+    def _on_json_export_progress(self, filename: str, current: int, total: int):
+        self.json_export_label.setText(f"Экспорт: {current}/{total} – {filename}")
+        self.json_progress_bar.setValue(int(100 * current / total))
 
-    def _on_export_finished(self, succeeded: int, total: int):
-        results = self.export_worker.results if self.export_worker else {}
+    def _on_json_export_finished(self, succeeded: int, total: int):
+        self.export_in_progress = False
+        self.json_export_label.setText(f"Экспорт JSON завершён. Успешно: {succeeded}/{total}")
+        self.json_progress_bar.setValue(100)
+        self._export_results = self.export_worker.results if self.export_worker else {}
+        self._export_succeeded = succeeded
+        self._export_total = total
+        self.html_generate_btn.setEnabled(True)
+        os.environ.pop('IDA_PSEUDOCODE', None)
+        self.html_progress_label.setText("Готов к созданию HTML")
+
+    # ------------------------------------------------------------------
+    # Генерация HTML-отчётов
+    # ------------------------------------------------------------------
+    def _start_html_generation(self):
+        results = self._export_results
+        if not results:
+            QMessageBox.warning(self, "Ошибка", "Нет данных экспорта. Сначала запустите IDAtoJSON.")
+            return
+
         generator = ReportGenerator()
         delete_json = self.delete_json_check.isChecked()
 
         input_dir = Path(self.inputdir_edit.text().strip())
-        reports_dir = input_dir / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
+        ida_reports = input_dir.parent / "IDAReports"
+        ida_reports.mkdir(parents=True, exist_ok=True)
 
-        generated_html_files = []
-        global_modules_set = set()
-        ida_info = None
+        self.html_in_progress = True
+        self.html_generate_btn.setEnabled(False)
+        self.json_export_btn.setEnabled(False)
+        self.html_progress_bar.setValue(0)
+        self.html_spinner.setVisible(False)
+        self.error_text.clear()
 
-        generated_count = 0
-        for idb_path, success in results.items():
-            if not success:
-                continue
+        self.html_worker = HtmlGeneratorWorker(
+            results, generator, ida_reports, input_dir, delete_json
+        )
+        self.html_worker.progress_updated.connect(self._on_html_generation_progress)
+        self.html_worker.error_occurred.connect(self._on_error)
+        self.html_worker.finished.connect(self._on_html_generation_finished)
+        self.html_worker.start()
 
-            json_path = Path(str(idb_path) + ".export.json")
-            if not json_path.exists():
-                self._on_error(f"JSON не найден: {json_path}")
-                continue
+    def _on_html_generation_progress(self, current: int, total: int, message: str = ""):
+        self.html_progress_label.setText(f"Создание HTML: {current}/{total} {message}")
+        self.html_progress_bar.setValue(int(100 * current / total))
 
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+    def _on_html_generation_finished(self, generated_count: int, report_links: list,
+                                     global_modules_set: set, global_elf_set: set,
+                                     ida_info: dict, ida_reports: Path, input_dir: Path):
+        self.html_progress_bar.setVisible(False)
+        self.html_spinner.setVisible(True)
+        self.html_progress_label.setText("Создание сводного отчёта...")
 
-                if ida_info is None and "ida_info" in data:
-                    ida_info = data["ida_info"]
+        sorted_modules = sorted(global_modules_set)
+        sorted_elf = sorted(global_elf_set)
 
-                for imp in data.get("imports", []):
-                    mod = imp.get("module")
-                    if mod and mod.lower() != "unknown":
-                        global_modules_set.add(mod)
+        self.index_worker = IndexWorker(
+            ReportGenerator(), ida_reports, input_dir,
+            report_links, sorted_modules, ida_info,
+            sorted_elf
+        )
+        self.index_worker.finished.connect(
+            lambda success: self._on_index_finished(success, generated_count, ida_reports, input_dir)
+        )
+        self.index_worker.error_occurred.connect(self._on_error)
+        self.index_worker.start()
 
-                original_file = Path(data["file_name"]).name
-                html_name = original_file + ".html"
-                output_html = reports_dir / html_name
-
-                generator.generate_from_json(json_path, output_html)
-                generated_html_files.append(output_html)
-                generated_count += 1
-
-                if delete_json:
-                    json_path.unlink(missing_ok=True)
-            except Exception as e:
-                self._on_error(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
-
-        # Удаляем временные файлы экспорта (исправлено имя лога)
-        for idb_path, success in results.items():
-            if not success:
-                continue
-            out_dir = idb_path.parent
-            # Правильное имя: stem файла (например, 7z.exe) + "_script.log"
-            script_log = out_dir / (idb_path.stem + "_script.log")
-            self._safe_clean_file(script_log, "script log")
-            for temp_pat in ["*.id0", "*.id1", "*.nam", "*.til"]:
-                for temp_file in out_dir.glob(temp_pat):
-                    self._safe_clean_file(temp_file, temp_pat[1:])
-
-        if generated_html_files:
-            try:
-                sorted_modules = sorted(global_modules_set)
-                generator.generate_index(
-                    reports_dir,
-                    input_dir,
-                    generated_html_files,
-                    sorted_modules,
-                    ida_info
-                )
-            except Exception as e:
-                self._on_error(f"Ошибка создания сводного отчёта: {e}")
-
-        self.export_in_progress = False
-        self.export_report_btn.setEnabled(True)
-        self.start_btn.setEnabled(True)
-        self.report_progress_label.setText(f"Готово. Создано отчётов: {generated_count}")
-        self.report_progress_bar.setValue(100)
-        if generated_count == succeeded and total > 0:
-            QMessageBox.information(self, "Готово", f"Отчёты сохранены в {reports_dir}")
+    def _on_index_finished(self, success: bool, generated_count: int, ida_reports: Path, input_dir: Path):
+        self.html_spinner.setVisible(False)
+        self.html_progress_bar.setVisible(True)
+        self.html_progress_bar.setValue(100)
+        self.html_in_progress = False
+        self.html_generate_btn.setEnabled(False)
+        self.json_export_btn.setEnabled(True)
+        self.html_progress_label.setText(f"Готово. Создано отчётов: {generated_count}")
+        if generated_count == self._export_succeeded and self._export_total > 0:
+            QMessageBox.information(self, "Готово", f"Отчёты сохранены в {ida_reports}")
         else:
-            QMessageBox.warning(self, "Внимание", f"Успешных отчётов: {generated_count}/{succeeded}.")
+            QMessageBox.warning(self, "Внимание", f"Успешных отчётов: {generated_count}/{self._export_succeeded}.")
 
     def _safe_clean_file(self, file_path: Path, description: str = "", retries: int = 3, delay: float = 1.0):
         if not file_path.exists():
@@ -603,3 +864,70 @@ class MainWindow(QMainWindow):
             self.current_theme = new_theme
             apply_theme(QApplication.instance(), new_theme)
             self._update_menu_styles()
+
+
+class HtmlGeneratorWorker(QThread):
+    progress_updated = Signal(int, int, str)
+    finished = Signal(int, list, set, set, dict, Path, Path)
+    error_occurred = Signal(str)
+
+    def __init__(self, results: dict, generator: ReportGenerator,
+                 reports_dir: Path, input_dir: Path, delete_json: bool, parent=None):
+        super().__init__(parent)
+        self.results = results
+        self.generator = generator
+        self.reports_dir = reports_dir
+        self.input_dir = input_dir
+        self.delete_json = delete_json
+
+    def run(self):
+        report_links = []
+        global_modules_set = set()
+        global_elf_set = set()
+        ida_info = None
+        generated_count = 0
+        total = len(self.results)
+
+        for i, (idb_path, success) in enumerate(self.results.items()):
+            if not success:
+                continue
+            json_path = Path(str(idb_path) + ".export.json")
+            if not json_path.exists():
+                self.error_occurred.emit(f"JSON не найден: {json_path}")
+                continue
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if ida_info is None and "ida_info" in data:
+                    ida_info = data["ida_info"]
+                for imp in data.get("imports", []):
+                    mod = imp.get("module")
+                    if not mod or mod.lower() == "unknown":
+                        continue
+                    if mod.startswith("."):
+                        global_elf_set.add(mod)
+                    else:
+                        global_modules_set.add(mod)
+                original_file = Path(data["file_name"]).name
+                source_full = Path(data["file_name"])
+                if not source_full.is_absolute():
+                    source_full = self.input_dir / source_full
+                try:
+                    rel = source_full.relative_to(self.input_dir)
+                except ValueError:
+                    rel = Path(original_file)
+                out_rel = rel.with_suffix(rel.suffix + ".html")
+                output_html = self.reports_dir / out_rel
+                output_html.parent.mkdir(parents=True, exist_ok=True)
+                self.generator.generate_from_json(json_path, output_html, reports_dir=self.reports_dir)
+                link = out_rel.as_posix()
+                display = rel.as_posix()
+                report_links.append({"filename": link, "display_name": display})
+                generated_count += 1
+                if self.delete_json:
+                    json_path.unlink(missing_ok=True)
+            except Exception as e:
+                self.error_occurred.emit(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
+            self.progress_updated.emit(i+1, total, "")
+        self.finished.emit(generated_count, report_links, global_modules_set,
+                           global_elf_set, ida_info, self.reports_dir, self.input_dir)

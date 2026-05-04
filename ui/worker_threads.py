@@ -6,9 +6,11 @@ from core.ida import IDAAnalyzer
 import logging
 
 class AnalysisWorker(QThread):
-    progress_updated = Signal(str, int, int)
-    analysis_finished = Signal(int, int)
-    error_occurred = Signal(str)                  # будет принимать все сообщения (и INFO)
+    progress_updated = Signal(str, int, int)      # текущий файл, номер, всего
+    file_started = Signal(str)                     # имя файла, анализ начат
+    file_completed = Signal(str, bool)            # имя файла, успех/ошибка
+    analysis_finished = Signal(int, int)           # успешно, всего
+    error_occurred = Signal(str)                   # сообщение только об ошибках
 
     def __init__(self, files: List[Path], idat_path: str, max_workers: int,
                  output_dir: Path = None, cleanup: bool = True, temp_cleanup: bool = True,
@@ -22,11 +24,13 @@ class AnalysisWorker(QThread):
         self.temp_cleanup = temp_cleanup
         self.verbose = verbose
         self._cancel = False
+        self._started_files = set()                # отслеживание начатых файлов
 
     def run(self):
         analyzer = IDAAnalyzer(idat_path=self.idat_path, max_workers=self.max_workers)
         analyzer.set_progress_callback(self._on_progress)
 
+        import logging
         root_logger = logging.getLogger()
         old_handlers = root_logger.handlers[:]
 
@@ -39,8 +43,7 @@ class AnalysisWorker(QThread):
                 self.signal.emit(msg)
 
         handler = SignalHandler(self.error_occurred)
-        # Перехватываем всё начиная с INFO, чтобы видеть сообщения об удалении
-        handler.setLevel(logging.INFO)
+        handler.setLevel(logging.ERROR)
         handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
         if self.verbose:
             root_logger.setLevel(logging.DEBUG)
@@ -62,11 +65,20 @@ class AnalysisWorker(QThread):
 
         succeeded = sum(1 for v in results.values() if v)
         total = len(results)
+
+        # Отправляем сигналы о завершении каждого файла
+        for f, success in results.items():
+            self.file_completed.emit(f.name, success)
+
         self.analysis_finished.emit(succeeded, total)
 
     def _on_progress(self, filename: str, current: int, total: int):
         if not self._cancel:
             self.progress_updated.emit(filename, current, total)
+            # Если файл ещё не был начат, сигнализируем о старте
+            if filename not in self._started_files:
+                self._started_files.add(filename)
+                self.file_started.emit(filename)
 
     def cancel(self):
         self._cancel = True
