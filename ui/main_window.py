@@ -1,20 +1,24 @@
 """Главное окно приложения с боковым меню и стеком страниц."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import time
+from enum import Enum
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+import squarify
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy,
     QPushButton, QLabel, QProgressBar, QTextEdit, QGroupBox,
     QFileDialog, QStackedWidget, QMessageBox, QApplication, QLineEdit,
     QFormLayout, QSlider, QRadioButton, QButtonGroup, QGridLayout,
-    QCheckBox, QFrame, QWhatsThis, QStyle, QProgressDialog
+    QCheckBox, QFrame, QWhatsThis, QStyle
 )
 from PySide6.QtCore import Qt, QPoint, QThread, Signal, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
-from pathlib import Path
-from typing import List, Optional
-import os
-import json
-import shutil
-import time
-import squarify
 
 from ui.worker_threads import AnalysisWorker
 from ui.settings_dialog import SettingsPage
@@ -24,6 +28,14 @@ from core.report_generator import ReportGenerator
 from core.ida import IDAAnalyzer
 from ui.theme import apply_theme
 
+
+class AnalysisStatus(Enum):
+    NOT_ANALYZED = "not_analyzed"
+    IN_PROGRESS = "in_progress"
+    SUCCESS = "success"
+    ERROR = "error"
+
+
 PLATFORM_EXTENSIONS = {
     "Windows": {"label": "Windows", "exts": [".exe", ".dll", ".sys", ".ocx", ".cpl", ".scr", ".drv", ".efi"]},
     "Linux / Android": {"label": "Linux / Android", "exts": [".elf", ".so", ".o", ".ko", ".dex"]},
@@ -32,6 +44,7 @@ PLATFORM_EXTENSIONS = {
 }
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
+
 
 class ExportWorker(QThread):
     progress_updated = Signal(str, int, int)
@@ -45,7 +58,7 @@ class ExportWorker(QThread):
         self.script_path = script_path
         self.idat_path = idat_path
         self.max_workers = max_workers
-        self.results = {}
+        self.results: Dict[Path, bool] = {}
         self._cancel = False
 
     def run(self):
@@ -104,14 +117,14 @@ class TreemapWidget(QWidget):
     """Виджет для отображения treemap файлов."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.file_items = []          # список словарей: name, size, status, path
-        self.rects = []
+        self.file_items: List[Dict[str, Any]] = []
+        self.rects: List[QRectF] = []
         self.hovered_index = -1
         self._data_pending = False
         self.setMouseTracking(True)
         self.setMinimumHeight(120)
 
-    def set_data(self, items):
+    def set_data(self, items: List[Dict[str, Any]]):
         self.file_items = items
         if self.width() > 0 and self.height() > 0:
             self._compute_layout()
@@ -119,10 +132,10 @@ class TreemapWidget(QWidget):
             self._data_pending = True
         self.update()
 
-    def update_status(self, file_path: str, status: str):
+    def update_status(self, file_path: str, status: AnalysisStatus):
         for item in self.file_items:
             if item['path'] == file_path:
-                item['status'] = status
+                item['status'] = status.value
                 break
         self.update()
 
@@ -149,7 +162,6 @@ class TreemapWidget(QWidget):
             return
         norm = squarify.normalize_sizes(sizes, w, h)
         coords = squarify.squarify(norm, 0, 0, w, h)
-        # squarify возвращает список словарей {'x': ..., 'y': ..., 'dx': ..., 'dy': ...}
         self.rects = [QRectF(d['x'], d['y'], d['dx'], d['dy']) for d in coords]
 
     def paintEvent(self, event):
@@ -162,7 +174,7 @@ class TreemapWidget(QWidget):
             if i >= len(self.file_items):
                 break
             item = self.file_items[i]
-            color = self._color_for_status(item.get('status', 'not_analyzed'))
+            color = self._color_for_status(AnalysisStatus(item.get('status', 'not_analyzed')))
             painter.fillRect(rect, color)
             painter.setPen(QPen(Qt.black, 1))
             painter.drawRect(rect)
@@ -172,12 +184,13 @@ class TreemapWidget(QWidget):
             painter.setPen(QPen(Qt.white, 2))
             painter.drawRect(self.rects[self.hovered_index])
 
-    def _color_for_status(self, status):
+    @staticmethod
+    def _color_for_status(status: AnalysisStatus) -> QColor:
         colors = {
-            'not_analyzed': QColor(192, 192, 192),
-            'in_progress': QColor(255, 255, 0),
-            'success': QColor(0, 200, 0),
-            'error': QColor(255, 0, 0)
+            AnalysisStatus.NOT_ANALYZED: QColor(192, 192, 192),
+            AnalysisStatus.IN_PROGRESS: QColor(255, 255, 0),
+            AnalysisStatus.SUCCESS: QColor(0, 200, 0),
+            AnalysisStatus.ERROR: QColor(255, 0, 0)
         }
         return colors.get(status, QColor(128, 128, 128))
 
@@ -200,22 +213,28 @@ class TreemapWidget(QWidget):
 
 
 class MainWindow(QMainWindow):
+    WINDOW_WIDTH = 1100
+    WINDOW_HEIGHT = 750
+    SIDEBAR_WIDTH = 200
+    MAX_IDA_THREADS = 32
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IDA Batch Tool")
-        self.resize(1100, 750)
-        self.cfg = load_config()
-        self.current_theme = self.cfg.get("theme", "light")
+        self.resize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
+        self.cfg: Dict[str, Any] = load_config()
+        self.current_theme: str = self.cfg.get("theme", "light")
         self.analysis_in_progress = False
         self.export_in_progress = False
         self.html_in_progress = False
-        self.worker = None
-        self.export_worker = None
-        self.index_worker = None
+        self.worker: Optional[AnalysisWorker] = None
+        self.export_worker: Optional[ExportWorker] = None
+        self.index_worker: Optional[IndexWorker] = None
+        self.html_worker: Optional[HtmlGeneratorWorker] = None
         self.active_page = 0
         self._cached_files: List[Path] = []
 
-        self._export_results = {}
+        self._export_results: Dict[Path, bool] = {}
         self._export_succeeded = 0
         self._export_total = 0
 
@@ -271,7 +290,11 @@ class MainWindow(QMainWindow):
                 base += " hover { background-color: #f0f0f5; }"
         return base
 
-    def _create_slider_with_label(self, initial_value, range_min=1, range_max=32):
+    def _create_slider_with_label(self, initial_value: int,
+                                  range_min: int = 1,
+                                  range_max: int = None) -> tuple[QWidget, QSlider, QLabel]:
+        if range_max is None:
+            range_max = self.MAX_IDA_THREADS
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -293,9 +316,8 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Боковая панель
         sidebar = QWidget(objectName="sidebar")
-        sidebar.setFixedWidth(200)
+        sidebar.setFixedWidth(self.SIDEBAR_WIDTH)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(10, 20, 10, 20)
         sidebar_layout.setSpacing(6)
@@ -332,7 +354,6 @@ class MainWindow(QMainWindow):
         self.settings_page.config_changed.connect(self._on_config_changed)
         self.pages.addWidget(self.analysis_page)
         self.pages.addWidget(self.settings_page)
-
         self.pages.setCurrentIndex(0)
         self.active_page = 0
 
@@ -345,27 +366,22 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # --- Источник файлов (на всю ширину) ---
         source_group = QGroupBox("Источник файлов")
         source_layout = QVBoxLayout(source_group)
         dir_row = QHBoxLayout()
-        self.inputdir_edit = QLineEdit()
+        self.inputdir_edit: QLineEdit = QLineEdit()
         self.inputdir_edit.setPlaceholderText("Путь к папке с бинарными файлами...")
         self.inputdir_edit.setText(get_default_inputdir())
-        self.browse_dir_btn = QPushButton("Обзор...")
+        self.browse_dir_btn: QPushButton = QPushButton("Обзор...")
         dir_row.addWidget(self.inputdir_edit, 1)
-        dir_row.addWidget(
-            self._create_help_button("Папка, в которой находятся исполняемые файлы для анализа.")
-        )
+        dir_row.addWidget(self._create_help_button("Папка, в которой находятся исполняемые файлы для анализа."))
         dir_row.addWidget(self.browse_dir_btn)
         source_layout.addLayout(dir_row)
         layout.addWidget(source_group)
 
-        # --- Две колонки под источником (одинаковой ширины) ---
         columns_layout = QHBoxLayout()
         columns_layout.setSpacing(20)
 
-        # Левая колонка
         left_column = QVBoxLayout()
         left_column.setSpacing(10)
         left_column.setContentsMargins(0, 0, 0, 0)
@@ -378,7 +394,7 @@ class MainWindow(QMainWindow):
 
         self.platform_buttons = QButtonGroup(self)
         self.platform_buttons.setExclusive(True)
-        self.radio_to_platform = {}
+        self.radio_to_platform: Dict[QRadioButton, str] = {}
         grid = QGridLayout()
         row, col = 0, 0
         for key, info in PLATFORM_EXTENSIONS.items():
@@ -407,7 +423,7 @@ class MainWindow(QMainWindow):
         scan_layout.addWidget(platform_group)
 
         self.max_ida_slider_container, self.max_ida_slider, self.max_ida_label = \
-            self._create_slider_with_label(min(get_max_ida(), 32), range_max=32)
+            self._create_slider_with_label(min(get_max_ida(), self.MAX_IDA_THREADS))
         slider_row = QHBoxLayout()
         slider_row.addWidget(QLabel("Потоков IDA:"))
         slider_row.addWidget(self.max_ida_slider_container)
@@ -427,7 +443,6 @@ class MainWindow(QMainWindow):
         flags_layout.addWidget(self.verbose_check)
         scan_layout.addWidget(flags_group)
 
-        # Кнопки запуска/отмены
         buttons_layout = QHBoxLayout()
         self.start_btn = QPushButton("Запустить анализ")
         self.start_btn.setFixedHeight(40)
@@ -437,7 +452,7 @@ class MainWindow(QMainWindow):
         buttons_layout.addWidget(self.cancel_btn)
         scan_layout.addLayout(buttons_layout)
 
-        # Обработка результатов IDA
+        # --- Группа экспорта в JSON (перемещён чекбокс псевдокода) ---
         json_group = QGroupBox("Обработка результатов IDA")
         json_layout = QVBoxLayout(json_group)
 
@@ -449,20 +464,27 @@ class MainWindow(QMainWindow):
         self.json_export_btn.setEnabled(False)
         self.json_export_btn.setToolTip("Запустить экспорт данных из .i64 в JSON.")
 
+        # CHANGED: чекбокс включения псевдокода теперь в JSON-секции
+        self.pseudocode_check = QCheckBox("Включить псевдокод в JSON-экспорт")
+        self.pseudocode_check.setToolTip(
+            "Если включено, для каждой функции будет добавлен псевдокод в JSON-файл.\n"
+            "Это замедляет экспорт и увеличивает размер JSON."
+        )
+        self.pseudocode_check.setChecked(False)
+
         json_layout.addWidget(self.json_export_label)
         json_layout.addWidget(self.json_progress_bar)
         json_layout.addWidget(self.json_export_btn, alignment=Qt.AlignLeft)
+        json_layout.addWidget(self.pseudocode_check)   # ← добавлен сюда
 
         left_column.addWidget(scan_group)
         left_column.addWidget(json_group)
         left_column.addStretch()
 
-        # --- Правая колонка (переработана) ---
         right_column = QVBoxLayout()
         right_column.setSpacing(10)
         right_column.setContentsMargins(0, 0, 0, 0)
 
-        # Прогресс анализа (компактный)
         self.current_file_label = QLabel("Готов к запуску")
         self.files_found_label = QLabel("")
         self.progress_bar = QProgressBar()
@@ -471,12 +493,10 @@ class MainWindow(QMainWindow):
         right_column.addWidget(self.files_found_label)
         right_column.addWidget(self.progress_bar)
 
-        # Treemap
         self.treemap = TreemapWidget()
         self.treemap.setMinimumHeight(150)
-        right_column.addWidget(self.treemap, 1)  # растягивается
+        right_column.addWidget(self.treemap, 1)
 
-        # Поле ошибок
         self.error_text = QTextEdit()
         self.error_text.setReadOnly(True)
         self.error_text.setMaximumHeight(120)
@@ -487,7 +507,7 @@ class MainWindow(QMainWindow):
         columns_layout.addLayout(right_column, 1)
         layout.addLayout(columns_layout)
 
-        # --- HTML-отчёт (на всю ширину) ---
+        # HTML-отчёт (псевдокод теперь не здесь)
         html_group = QGroupBox("HTML-отчёт")
         html_layout = QVBoxLayout(html_group)
 
@@ -503,10 +523,6 @@ class MainWindow(QMainWindow):
         self.delete_json_check.setToolTip("После успешной генерации HTML-отчётов и сводного индекса, JSON-файлы экспорта будут удалены.")
         self.delete_json_check.setChecked(True)
 
-        self.pseudocode_check = QCheckBox("Включить псевдокод в отчёт")
-        self.pseudocode_check.setToolTip("Если включено, для каждой функции будет добавлен псевдокод. Это замедляет экспорт.")
-        self.pseudocode_check.setChecked(False)
-
         self.html_generate_btn = QPushButton("Сгенерировать HTML-отчёты")
         self.html_generate_btn.setEnabled(False)
         self.html_generate_btn.setToolTip("Создать интерактивные HTML-отчёты на основе JSON-файлов.")
@@ -515,7 +531,6 @@ class MainWindow(QMainWindow):
         html_layout.addWidget(self.html_progress_bar)
         html_layout.addWidget(self.html_spinner)
         html_layout.addWidget(self.delete_json_check)
-        html_layout.addWidget(self.pseudocode_check)
         html_layout.addWidget(self.html_generate_btn, alignment=Qt.AlignLeft)
         layout.addWidget(html_group)
 
@@ -546,15 +561,12 @@ class MainWindow(QMainWindow):
             self.inputdir_edit.setText(path)
             self._refresh_file_list()
 
-    def _selected_extensions(self):
+    def _selected_extensions(self) -> List[str]:
         checked = self.platform_buttons.checkedButton()
         if checked and checked in self.radio_to_platform:
             return PLATFORM_EXTENSIONS[self.radio_to_platform[checked]]["exts"]
         return PLATFORM_EXTENSIONS["All platforms"]["exts"]
 
-    # ------------------------------------------------------------------
-    # Проверка существующих .i64 и управление состоянием
-    # ------------------------------------------------------------------
     def _refresh_file_list(self):
         input_dir = self.inputdir_edit.text().strip()
         if not input_dir or not os.path.isdir(input_dir):
@@ -586,14 +598,13 @@ class MainWindow(QMainWindow):
         self.json_export_btn.setEnabled(any_idb)
         self.html_generate_btn.setEnabled(False)
 
-        # Обновляем treemap
         items = []
         for f in files:
             size = f.stat().st_size if f.exists() else 0
-            status = 'not_analyzed'
+            status = AnalysisStatus.NOT_ANALYZED
             if self._get_expected_idb_path(f).exists():
-                status = 'success'
-            items.append({'name': f.name, 'size': size, 'status': status, 'path': str(f)})
+                status = AnalysisStatus.SUCCESS
+            items.append({'name': f.name, 'size': size, 'status': status.value, 'path': str(f)})
         self.treemap.set_data(items)
 
     def _get_expected_idb_path(self, file_path: Path) -> Path:
@@ -604,15 +615,11 @@ class MainWindow(QMainWindow):
     def _all_idbs_exist(self, files: List[Path]) -> bool:
         return all(self._get_expected_idb_path(f).exists() for f in files)
 
-    # ------------------------------------------------------------------
-    # Запуск анализа
-    # ------------------------------------------------------------------
     def _start_analysis(self):
         idat_path = get_ida_executable()
         if not shutil.which(idat_path):
             QMessageBox.warning(
-                self,
-                "Утилита IDA не найдена",
+                self, "Утилита IDA не найдена",
                 f"Исполняемый файл '{idat_path}' не найден в системном PATH.\n\n"
                 "Пожалуйста, проверьте путь к idat.exe в разделе «Конфигурация» или "
                 "добавьте папку с IDA в переменную PATH."
@@ -635,19 +642,16 @@ class MainWindow(QMainWindow):
 
         if self._all_idbs_exist(files):
             reply = QMessageBox.question(
-                self,
-                "Базы данных уже существуют",
+                self, "Базы данных уже существуют",
                 "Для всех найденных исполняемых файлов уже существуют .i64 базы.\n"
                 "Хотите сразу создать JSON для последующей обработки?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
             )
             if reply == QMessageBox.Yes:
                 self._start_json_export()
                 return
 
         self.files_found_label.setText(f"Найдено {len(files)} исполняемых файлов")
-
         self.analysis_in_progress = True
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
@@ -665,7 +669,7 @@ class MainWindow(QMainWindow):
             verbose=self.verbose_check.isChecked()
         )
         self.worker.progress_updated.connect(self._on_progress)
-        self.worker.file_started.connect(self._on_file_started)      # новинка
+        self.worker.file_started.connect(self._on_file_started)
         self.worker.file_completed.connect(self._on_file_completed)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.analysis_finished.connect(self._on_finished)
@@ -676,7 +680,7 @@ class MainWindow(QMainWindow):
             return
         for f in self._cached_files:
             if f.name == filename:
-                self.treemap.update_status(str(f), 'in_progress')
+                self.treemap.update_status(str(f), AnalysisStatus.IN_PROGRESS)
                 break
 
     def _on_progress(self, filename: str, current: int, total: int):
@@ -688,7 +692,7 @@ class MainWindow(QMainWindow):
             return
         for f in self._cached_files:
             if f.name == filename:
-                self.treemap.update_status(str(f), 'success' if success else 'error')
+                self.treemap.update_status(str(f), AnalysisStatus.SUCCESS if success else AnalysisStatus.ERROR)
                 break
 
     def _on_error(self, message: str):
@@ -713,9 +717,6 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self.current_file_label.setText("Отмена...")
 
-    # ------------------------------------------------------------------
-    # Экспорт в JSON
-    # ------------------------------------------------------------------
     def _start_json_export(self):
         input_dir = self.inputdir_edit.text().strip()
         if not os.path.isdir(input_dir):
@@ -727,7 +728,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Информация", "В папке нет файлов .i64 или .idb.")
             return
 
-        script_path = Path(__file__).resolve().parent.parent / "scripts" / "export_data.py"
+        script_path = SCRIPT_DIR / "scripts" / "export_data.py"
         if not script_path.exists():
             QMessageBox.critical(self, "Ошибка", f"Скрипт не найден: {script_path}")
             return
@@ -770,9 +771,6 @@ class MainWindow(QMainWindow):
         os.environ.pop('IDA_PSEUDOCODE', None)
         self.html_progress_label.setText("Готов к созданию HTML")
 
-    # ------------------------------------------------------------------
-    # Генерация HTML-отчётов
-    # ------------------------------------------------------------------
     def _start_html_generation(self):
         results = self._export_results
         if not results:
@@ -805,9 +803,11 @@ class MainWindow(QMainWindow):
         self.html_progress_label.setText(f"Создание HTML: {current}/{total} {message}")
         self.html_progress_bar.setValue(int(100 * current / total))
 
+    # FIXED: ida_info теперь Optional, обрабатывается безопасно
     def _on_html_generation_finished(self, generated_count: int, report_links: list,
                                      global_modules_set: set, global_elf_set: set,
-                                     ida_info: dict, ida_reports: Path, input_dir: Path):
+                                     ida_info: Optional[Dict[str, Any]],    # ← теперь Optional
+                                     ida_reports: Path, input_dir: Path):
         self.html_progress_bar.setVisible(False)
         self.html_spinner.setVisible(True)
         self.html_progress_label.setText("Создание сводного отчёта...")
@@ -839,7 +839,8 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Внимание", f"Успешных отчётов: {generated_count}/{self._export_succeeded}.")
 
-    def _safe_clean_file(self, file_path: Path, description: str = "", retries: int = 3, delay: float = 1.0):
+    @staticmethod
+    def _safe_clean_file(file_path: Path, description: str = "", retries: int = 3, delay: float = 1.0):
         if not file_path.exists():
             return
         for attempt in range(1, retries + 1):
@@ -857,7 +858,7 @@ class MainWindow(QMainWindow):
                 print(f"[Cleanup] Could not remove {file_path.name}: {e}")
                 break
 
-    def _on_config_changed(self, new_config):
+    def _on_config_changed(self, new_config: Dict[str, Any]):
         self.cfg = new_config
         new_theme = new_config.get("theme", "light")
         if new_theme != self.current_theme:
@@ -884,7 +885,7 @@ class HtmlGeneratorWorker(QThread):
         report_links = []
         global_modules_set = set()
         global_elf_set = set()
-        ida_info = None
+        ida_info: Optional[Dict[str, Any]] = None
         generated_count = 0
         total = len(self.results)
 
@@ -929,5 +930,7 @@ class HtmlGeneratorWorker(QThread):
             except Exception as e:
                 self.error_occurred.emit(f"Ошибка генерации отчёта для {idb_path.name}: {e}")
             self.progress_updated.emit(i+1, total, "")
+
+        # FIXED: Заменяем None на пустой словарь, чтобы избежать ошибки преобразования типов
         self.finished.emit(generated_count, report_links, global_modules_set,
-                           global_elf_set, ida_info, self.reports_dir, self.input_dir)
+                           global_elf_set, ida_info or {}, self.reports_dir, self.input_dir)

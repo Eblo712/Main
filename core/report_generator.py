@@ -2,9 +2,10 @@
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from jinja2 import Environment, BaseLoader, select_autoescape
 from urllib.parse import quote
+
 from core.module_classifier import classify_module, get_module_category_and_description
 
 logger = logging.getLogger(__name__)
@@ -349,11 +350,14 @@ INDEX_TEMPLATE = """
         <h2>Общая информация</h2>
         <p><strong>Директория анализа:</strong> {{ input_dir }}</p>
         <p><strong>Исследовано модулей:</strong> {{ total_modules }}</p>
+
         {% if ida_info %}
         <h3>Характеристики IDA Pro</h3>
         <ul>
             <li><strong>Версия ядра:</strong> {{ ida_info.kernel_version }}</li>
         </ul>
+        {% else %}
+        <p><em>Информация о версии IDA недоступна.</em></p>
         {% endif %}
     </div>
 
@@ -406,7 +410,7 @@ INDEX_TEMPLATE = """
 class ReportGenerator:
     """Создаёт HTML-отчёты из JSON-файлов экспорта."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.env = Environment(
             loader=BaseLoader(),
             autoescape=select_autoescape(['html', 'xml'])
@@ -421,20 +425,21 @@ class ReportGenerator:
 
     def generate_from_json(self, json_path: Path, output_html: Optional[Path] = None,
                            reports_dir: Optional[Path] = None) -> Path:
+        """Генерирует HTML-отчёт из JSON-файла экспорта."""
         if not json_path.exists():
             raise FileNotFoundError(f"JSON-файл не найден: {json_path}")
 
         with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            data: Dict[str, Any] = json.load(f)
 
-        is_elf = data.get("is_elf", False)
+        is_elf: bool = data.get("is_elf", False)
 
-        # Для PE формируем списки опознанных/неопознанных модулей как раньше
+        # Для PE формируем списки опознанных/неопознанных модулей
         if not is_elf:
-            known = []
-            unknown = []
-            elf = []
-            seen = set()
+            known: List[str] = []
+            unknown: List[str] = []
+            elf: List[str] = []
+            seen: Set[str] = set()
             for imp in data.get("imports", []):
                 mod = imp.get("module")
                 if not mod or mod.lower() == "unknown":
@@ -489,6 +494,7 @@ class ReportGenerator:
                        elf_sections: Optional[List[str]] = None) -> Path:
         """
         Создаёт индексный файл index.html в reports_dir.
+
         :param reports: список словарей {'filename': относительный_путь, 'display_name': текст}
         :param unique_modules: список имён модулей (НЕ секций) – для ELF это имена .so библиотек
         :param elf_sections: список обнаруженных секций ELF
@@ -497,7 +503,8 @@ class ReportGenerator:
         for report in reports:
             report["filename"] = quote(report["filename"])
 
-        categories = {}
+        # Группировка модулей по категориям
+        categories: Dict[str, dict] = {}
         for mod in unique_modules:
             cat, desc = get_module_category_and_description(mod)
             categories.setdefault(cat, {"description": desc, "modules": []})
@@ -506,7 +513,8 @@ class ReportGenerator:
                 "desc": classify_module(mod)
             })
 
-        grouped_list = []
+        # Сортировка категорий: сначала всё, кроме "Неопознанные модули", потом они
+        grouped_list: List[dict] = []
         sorted_cats = sorted([c for c in categories if c != "Неопознанные модули"])
         if "Неопознанные модули" in categories:
             sorted_cats.append("Неопознанные модули")
